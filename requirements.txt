@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+edge-tts
+pynput
+uiautomation
+pygame
+requests

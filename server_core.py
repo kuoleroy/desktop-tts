@@ -2,6 +2,7 @@ import asyncio
 import base64
 import hashlib
 import io
+import json
 import os
 import re
 import subprocess
@@ -23,8 +24,48 @@ PROMPT_TEXT = '我站在大江边上，听着涛声一阵一阵。天色已经�
 SAMPLE_RATE = 24000
 MAX_BLOCK = 380
 EDGE_VOICE = 'zh-CN-YunjianNeural'
-EDGE_MAX_SINGLE = 900
+EDGE_MAX_SINGLE = 2000
 CACHE_DIR = os.path.join(os.environ.get('TEMP', '.'), 'browsertts_cache')
+CONFIG_PATH = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')),
+                           'desktop-tts', 'config.json')
+
+
+def get_cache_limit_mb():
+    try:
+        with open(CONFIG_PATH, encoding='utf-8') as f:
+            return int(json.load(f).get('cache_limit', 500))
+    except Exception:
+        return 500
+
+
+def clean_cache():
+    limit_mb = get_cache_limit_mb()
+    if limit_mb <= 0:
+        return
+    try:
+        files, total = [], 0
+        for name in os.listdir(CACHE_DIR):
+            p = os.path.join(CACHE_DIR, name)
+            try:
+                sz = os.path.getsize(p)
+                total += sz
+                files.append((os.path.getmtime(p), p, sz))
+            except OSError:
+                pass
+        limit = limit_mb * 1024 * 1024
+        if total <= limit:
+            return
+        files.sort()
+        for _, p, sz in files:
+            if total <= limit:
+                break
+            try:
+                os.remove(p)
+                total -= sz
+            except OSError:
+                pass
+    except OSError:
+        pass
 
 VOICES = {
     'yunJian': {'name': '云健·男', 'edge': 'zh-CN-YunjianNeural',
@@ -54,6 +95,7 @@ def cache_set(text, speed, voice, pitch, payload):
         key = hashlib.md5(('%s|%s|%s|%s' % (text, speed, voice, pitch)).encode('utf-8')).hexdigest()
         with open(os.path.join(CACHE_DIR, key + '.pkl'), 'wb') as f:
             f.write(payload)
+        clean_cache()
     except OSError:
         pass
 
