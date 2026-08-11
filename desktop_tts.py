@@ -253,13 +253,44 @@ class Grabber:
             return '', None
 
 
+BG = '#1e1f24'
+BG2 = '#26272e'
+FG = '#e8eaed'
+FG2 = '#9aa0aa'
+BTN = '#3a3f4b'
+BTN_HI = '#4a5060'
+ACCENT = '#4f7cff'
+FONT = ('Microsoft YaHei', 9)
+FONT_B = ('Microsoft YaHei', 9, 'bold')
+
+
+def _option_menu(parent, var, values, width=8):
+    om = tk.OptionMenu(parent, var, *values)
+    om.config(bg=BG2, fg=FG, activebackground=BTN_HI, activeforeground=FG,
+              relief='flat', bd=0, highlightthickness=0, font=FONT,
+              cursor='hand2', width=width)
+    om['menu'].config(bg=BG2, fg=FG, activebackground=ACCENT,
+                      activeforeground='white', bd=0, font=FONT)
+    return om
+
+
+def _button(parent, text, command, accent=False, disabled=False):
+    return tk.Button(parent, text=text, command=command,
+                     bg=ACCENT if accent else BTN,
+                     activebackground=BTN_HI, fg='white',
+                     relief='flat', bd=0, padx=9, pady=2, font=FONT,
+                     cursor='hand2', state='disabled' if disabled else 'normal')
+
+
 class App:
     def __init__(self):
         self.player = Player()
         self.win = tk.Tk()
         self.win.overrideredirect(True)
         self.win.attributes('-topmost', True)
-        self.win.configure(bg='#2f6fed')
+        self.win.configure(bg=BG)
+        self._cur_scale = None
+        self._scale_fonts = []
         self._build_ui()
         self.grabber = Grabber(self.on_text, self._on_filter)
         self._last_click = (0, 0, 0.0)
@@ -267,56 +298,78 @@ class App:
         self._hook_global()
 
     def _build_ui(self):
-        self.ball_frm = tk.Frame(self.win, bg='#2f6fed')
-        self.ball = tk.Label(self.ball_frm, text='读', width=4, height=2, bg='#2f6fed',
+        self.ball_frm = tk.Frame(self.win, bg=BG)
+        self.ball = tk.Label(self.ball_frm, text='读', width=4, height=2, bg=ACCENT,
                              fg='white', font=('Microsoft YaHei', 12, 'bold'),
                              cursor='hand2')
         self.ball.pack()
         self.ball.configure(cursor='hand2')
 
-        self.panel_frm = tk.Frame(self.win, bg='#2f6fed')
-        opts = tk.Frame(self.panel_frm, bg='#2f6fed')
-        opts.pack(side='top', pady=(0, 2))
+        self.panel_frm = tk.Frame(self.win, bg=BG, highlightbackground=BG2,
+                                  highlightthickness=1)
+        opts = tk.Frame(self.panel_frm, bg=BG)
+        self._opts_frm = opts
+        opts.pack(side='top', pady=(12, 6))
+        self._opts_labels = []
+        self._opts_menus = []
+        self._buttons = []
         self.voice_var = tk.StringVar(value='云健·男')
-        tk.Label(opts, text='音色', bg='#2f6fed', fg='white',
-                 font=('Microsoft YaHei', 9)).pack(side='left')
-        tk.OptionMenu(opts, self.voice_var, *VOICE_NAMES).pack(side='left', padx=2)
-        tk.Label(opts, text='语速', bg='#2f6fed', fg='white',
-                 font=('Microsoft YaHei', 9)).pack(side='left')
+        tk.Label(opts, text='音色', bg=BG, fg=FG2,
+                 font=FONT).pack(side='left')
+        tk.Label(opts, text='语速', bg=BG, fg=FG2,
+                 font=FONT).pack(side='left')
+        tk.Label(opts, text='语调', bg=BG, fg=FG2,
+                 font=FONT).pack(side='left')
+        for l in opts.winfo_children():
+            self._opts_labels.append(l)
         self.speed_var = tk.StringVar(value='0.9')
-        tk.OptionMenu(opts, self.speed_var, *SPEED_LIST).pack(side='left', padx=2)
-        tk.Label(opts, text='语调', bg='#2f6fed', fg='white',
-                 font=('Microsoft YaHei', 9)).pack(side='left')
         self.pitch_var = tk.StringVar(value='+0Hz')
-        tk.OptionMenu(opts, self.pitch_var, *PITCH_LIST).pack(side='left', padx=2)
+        self._opts_menus = [None] * 3
+        for i, (var, values, width) in enumerate((
+                (self.voice_var, VOICE_NAMES, 8),
+                (self.speed_var, SPEED_LIST, 5),
+                (self.pitch_var, PITCH_LIST, 5))):
+            self._opts_menus[i] = _option_menu(opts, var, values, width)
+            self._opts_menus[i].pack(side='left', padx=2)
         self._load_config()
-        self.lbl = tk.Label(self.panel_frm, text='', bg='#2f6fed', fg='white',
-                            font=('Microsoft YaHei', 10))
-        self.lbl.pack(side='top')
-        row = tk.Frame(self.panel_frm, bg='#2f6fed')
-        row.pack(side='top', pady=(4, 0))
-        self.btn_read = tk.Button(row, text='朗读', command=self.read,
-                                  bg='#1d4fc0', fg='white', relief='flat', padx=10)
-        self.btn_pause = tk.Button(row, text='暂停', command=self.toggle_pause,
-                                   bg='#1d4fc0', fg='white', relief='flat', padx=8, state='disabled')
-        self.btn_stop = tk.Button(row, text='停止', command=self.stop,
-                                  bg='#1d4fc0', fg='white', relief='flat', padx=8, state='disabled')
-        self.btn_close = tk.Button(row, text='收起', command=self._show_ball,
-                                   bg='#1d4fc0', fg='white', relief='flat', padx=8)
-        self.btn_add_app = tk.Button(row, text='此软件', command=self._add_app,
-                                     bg='#1d4fc0', fg='white', relief='flat', padx=8)
-        self.btn_export = tk.Button(row, text='导出MP3', command=self.export_mp3,
-                                    bg='#1d4fc0', fg='white', relief='flat', padx=8)
+        row = tk.Frame(self.panel_frm, bg=BG)
+        self._row_frm = row
+        row.pack(side='top', pady=(6, 4))
+        self.btn_read = _button(row, '朗读', self.read, accent=True)
+        self.btn_pause = _button(row, '暂停', self.toggle_pause, disabled=True)
+        self.btn_add_app = _button(row, '此软件', self._add_app)
+        self.btn_export = _button(row, '导出MP3', self.export_mp3)
+        self.btn_stop = _button(row, '停止', self.stop, disabled=True)
+        self.btn_close = _button(row, '收起', self._show_ball_home)
+        for b in row.winfo_children():
+            self._buttons.append(b)
         self.btn_read.pack(side='left', padx=2)
         self.btn_pause.pack(side='left', padx=2)
         self.btn_add_app.pack(side='left', padx=2)
         self.btn_export.pack(side='left', padx=2)
         self.btn_stop.pack(side='left', padx=2)
         self.btn_close.pack(side='left', padx=2)
-        self.win.bind('<ButtonPress-1>', self._on_win_press)
-        self.win.bind('<B1-Motion>', self._on_win_drag)
-        self.win.bind('<ButtonRelease-1>', self._on_win_release)
+        self.lbl = tk.Label(self.panel_frm, text='', bg=BG, fg=FG2,
+                            font=('Microsoft YaHei', 9), wraplength=340,
+                            justify='left', height=6)
+        self.lbl.pack(side='top', pady=(6, 2))
+        self._resize_bar = tk.Label(self.panel_frm, text='▬', bg=BG2, fg=FG2,
+                                    font=('Microsoft YaHei', 8), cursor='size_ns',
+                                    pady=4)
+        self._resize_bar.pack(side='bottom', fill='x')
+        self._collect_scaleable(self.panel_frm)
+        self._bind_drag(self.win)
         self.win.bind_all('<Button-3>', self._menu)
+
+    def _bind_drag(self, w):
+        for c in w.winfo_children():
+            if isinstance(c, (tk.Button, tk.Menubutton, tk.OptionMenu)):
+                continue
+            for tag, cb in (('<ButtonPress-1>', self._on_win_press),
+                            ('<B1-Motion>', self._on_win_drag),
+                            ('<ButtonRelease-1>', self._on_win_release)):
+                c.bind(tag, cb)
+            self._bind_drag(c)
         self._no_grab_var = tk.BooleanVar(value=False)
         self._cache_var = tk.IntVar(value=500)
         self._filter_mode_var = tk.StringVar(value='all')
@@ -325,6 +378,10 @@ class App:
         self._tray = None
         self._press_pos = None
         self._off = None
+        self._last_ball_click = 0.0
+        self._panel_h = None
+        self._cur_scale = None
+        self._scale_fonts = []
         self._last_proc = ''
 
     def _load_config(self):
@@ -361,26 +418,47 @@ class App:
             pass
 
     def _on_win_press(self, e):
+        w, h = self.win.winfo_width(), self.win.winfo_height()
+        bar = getattr(self, '_resize_bar', None)
+        self._resizing = (w > 60 and self.panel_frm.winfo_ismapped()
+                          and (e.widget is bar or e.y >= h - 16))
+        self._resize_start = (w, h, e.x_root, e.y_root)
         self._press_pos = (e.x_root, e.y_root)
         self._off = (e.x_root - self.win.winfo_x(), e.y_root - self.win.winfo_y())
 
     def _on_win_drag(self, e):
-        if self._off:
+        if self._resizing:
+            w, h, sx, sy = self._resize_start
+            self._panel_h = max(230, h + e.y_root - sy)
+            self.win.geometry('%dx%d' % (w, self._panel_h))
+            self._apply_scale(self._panel_h)
+        elif self._off:
             self.win.geometry('+%d+%d' % (e.x_root - self._off[0],
                                           e.y_root - self._off[1]))
 
     def _on_win_release(self, e):
         moved = self._press_pos and (abs(e.x_root - self._press_pos[0]) > 5
                                      or abs(e.y_root - self._press_pos[1]) > 5)
-        if not moved and self.ball_frm.winfo_ismapped():
-            self._show_panel()
+        if not moved and not self._resizing:
+            now = time.time()
+            if now - self._last_ball_click < 0.35:
+                self._last_ball_click = 0.0
+                if self.ball_frm.winfo_ismapped():
+                    self._show_panel()
+                else:
+                    self._show_ball()
+            else:
+                self._last_ball_click = now
         self._off = None
+        self._resizing = False
 
     def _menu(self, e):
-        m = tk.Menu(self.win, tearoff=0)
-        m.add_command(label='收起', command=self._show_ball)
+        m = tk.Menu(self.win, tearoff=0, bg=BG2, fg=FG,
+                    activebackground=ACCENT, activeforeground='white', bd=0)
+        m.add_command(label='收起', command=self._show_ball_home)
         m.add_command(label='最小化到任务栏', command=self._minimize)
-        cache_menu = tk.Menu(m, tearoff=0)
+        cache_menu = tk.Menu(m, tearoff=0, bg=BG2, fg=FG,
+                             activebackground=ACCENT, activeforeground='white', bd=0)
         for label, val in (('100MB', 100), ('300MB', 300), ('500MB', 500),
                            ('1GB', 1024), ('不限制', 0)):
             cache_menu.add_radiobutton(label=label, command=self._save_config,
@@ -388,7 +466,8 @@ class App:
         cache_menu.add_separator()
         cache_menu.add_command(label='打开缓存文件夹', command=self._open_cache)
         m.add_cascade(label='缓存上限', menu=cache_menu)
-        filter_menu = tk.Menu(m, tearoff=0)
+        filter_menu = tk.Menu(m, tearoff=0, bg=BG2, fg=FG,
+                              activebackground=ACCENT, activeforeground='white', bd=0)
         for label, val in (('全部软件', 'all'), ('仅以下软件', 'whitelist'),
                            ('排除以下软件', 'blacklist')):
             filter_menu.add_radiobutton(label=label, command=self._save_config,
@@ -504,7 +583,7 @@ class App:
             self.win.deiconify()
 
     def _tray_show(self, icon=None, item=None):
-        self.win.after(0, self._show_ball)
+        self.win.after(0, self._show_ball_home)
 
     def _tray_quit(self, icon=None, item=None):
         self.win.after(0, self.win.destroy)
@@ -521,21 +600,61 @@ class App:
         return x, y
 
     def _show_ball(self):
+        self._last_ball_click = 0.0
         self.win.deiconify()
         self.grabber._last_text = ''
         self.panel_frm.pack_forget()
-        self.ball_frm.pack()
-        sw, sh = self.win.winfo_screenwidth(), self.win.winfo_screenheight()
+        self.ball_frm.pack(fill='both', expand=True)
+        w, h = self.win.winfo_width(), self.win.winfo_height()
+        x, y = self.win.winfo_x(), self.win.winfo_y()
+        if w < 2 or h < 2:
+            w, h = 70, 70
+        x, y = self._clamp_pos(x, y, w, h)
+        self.win.geometry('70x70+%d+%d' % (x, y))
+
+    def _show_ball_home(self):
+        self._panel_h = None
+        self._show_ball()
+        sw = self.win.winfo_screenwidth()
+        sh = self.win.winfo_screenheight()
         self.win.geometry('70x70+%d+%d' % (sw - 100, sh - 140))
 
     def _show_panel(self):
         self.ball_frm.pack_forget()
-        self.panel_frm.pack(padx=6, pady=4)
+        self.panel_frm.pack(fill='both', expand=True)
         self.win.geometry('')
         self.win.update_idletasks()
+        h = max(self.win.winfo_height(), self._panel_h or 0, 230)
+        self.win.geometry('%dx%d' % (self.win.winfo_width(), h))
+        self.win.update_idletasks()
+        self._apply_scale()
         x, y = self.win.winfo_x(), self.win.winfo_y()
         x, y = self._clamp_pos(x, y, self.win.winfo_width(), self.win.winfo_height())
         self.win.geometry('+%d+%d' % (x, y))
+
+    def _apply_scale(self, h=None):
+        h = h or self.win.winfo_height()
+        size = 9 + max(0, (h - 230) // 110)
+        if size == self._cur_scale:
+            return
+        self._cur_scale = size
+        for w, fam, base in self._scale_fonts:
+            if w is self.lbl:
+                continue
+            w.config(font=(fam, base + max(0, size - 9)))
+        self.lbl.config(font=('Microsoft YaHei', max(8, 9 + size - 9 - 1)),
+                        wraplength=max(200, self.win.winfo_width() - 22))
+
+    def _collect_scaleable(self, w):
+        for c in w.winfo_children():
+            if isinstance(c, (tk.Button, tk.Menubutton, tk.OptionMenu, tk.Label)):
+                f = c.cget('font')
+                if isinstance(f, tuple) and len(f) > 1:
+                    fam, base = f[0], f[1]
+                else:
+                    fam, base = 'Microsoft YaHei', 9
+                self._scale_fonts.append((c, fam, base))
+            self._collect_scaleable(c)
 
     def _hook_global(self):
         try:
@@ -575,7 +694,7 @@ class App:
         try:
             from pynput import keyboard as kb
             if key == kb.Key.esc:
-                self.win.after(0, self._show_ball)
+                self.win.after(0, self._show_ball_home)
                 return
             if key in (kb.Key.ctrl_l, kb.Key.ctrl_r):
                 self._ctrl_down = True
@@ -690,8 +809,36 @@ class App:
         except Exception as e:
             self.win.after(0, lambda: self.lbl.config(text='失败: %s' % e))
             return
-        self.win.after(0, lambda: self.lbl.config(text='朗读中… (可暂停/停止)'))
+        self.win.after(0, self._begin_play, text, wavs)
+
+    def _begin_play(self, text, wavs):
+        self._start_scroll(text)
         self.player.play(wavs)
+
+    def _start_scroll(self, text):
+        self._scroll_text = ' '.join(text.split())
+        self._scroll_pos = 0
+        self._scroll_n = None
+        self._tick_scroll()
+
+    def _tick_scroll(self):
+        if not (self.player.playing or self.player.paused):
+            self._scroll_job = None
+            return
+        n = max(4, (self.win.winfo_width() - 22) // max(8, self._cur_scale or 9))
+        if n != self._scroll_n:
+            self._scroll_n = n
+            self._scroll_lines = [self._scroll_text[i:i + n]
+                                  for i in range(0, len(self._scroll_text), n)]
+        lines = self._scroll_lines
+        if len(lines) <= 6:
+            self.lbl.config(text='\n'.join(lines))
+            self._scroll_job = None
+            return
+        self._scroll_pos = min(self._scroll_pos, len(lines) - 6)
+        self.lbl.config(text='\n'.join(lines[self._scroll_pos:self._scroll_pos + 6]))
+        self._scroll_pos = (self._scroll_pos + 1) % (len(lines) - 5)
+        self._scroll_job = self.win.after(300, self._tick_scroll)
 
     def export_mp3(self):
         if not hasattr(self, 'cur_text') or not self.cur_text:
@@ -753,7 +900,7 @@ class App:
         self.lbl.config(text='已停止')
 
     def run(self):
-        self._show_ball()
+        self._show_ball_home()
         self.win.mainloop()
 
 
