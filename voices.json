@@ -1,0 +1,49 @@
+{
+  "voices": {
+    "yunJian": {
+      "name": "云健·男",
+      "desc": "成年男声（edge 在线）",
+      "edge": "zh-CN-YunjianNeural"
+    },
+    "yunYang": {
+      "name": "云扬·男",
+      "desc": "青年男声（edge 在线）",
+      "edge": "zh-CN-YunyangNeural"
+    },
+    "yunXia": {
+      "name": "云夏·男",
+      "desc": "少年男声（edge 在线）",
+      "edge": "zh-CN-YunxiaNeural"
+    },
+    "xiaoYi": {
+      "name": "晓伊·女",
+      "desc": "温柔女声（edge 在线）",
+      "edge": "zh-CN-XiaoyiNeural"
+    },
+    "xiaoXiao": {
+      "name": "晓晓·女",
+      "desc": "女声（edge 在线）",
+      "edge": "zh-CN-XiaoxiaoNeural"
+    },
+    "xiaoXuan": {
+      "name": "晓萱·女",
+      "desc": "女声（edge 在线）",
+      "edge": "zh-CN-XiaoxuanNeural"
+    }
+  },
+  "sapi_voices": {
+    "xiaoXiaoLocal": {
+      "name": "晓晓·本地",
+      "desc": "Windows 自带神经语音（离线）",
+      "sapi": "Microsoft Xiaoxiao (Natural)"
+    },
+    "yunXiLocal": {
+      "name": "云希·本地",
+      "desc": "Windows 自带神经语音（离线）",
+      "sapi": "Microsoft Yunxi (Natural)"
+    }
+  },
+  "speed_list": ["0.5", "0.7", "0.8", "0.9", "1.0", "1.2", "1.5", "2.0"],
+  "pitch_list": ["-15Hz", "-10Hz", "-5Hz", "+0Hz", "+5Hz", "+10Hz", "+15Hz"],
+  "edge_max_single": 2000
+}

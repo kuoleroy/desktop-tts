@@ -54,11 +54,34 @@ GAP_S = 0.5
 DEBOUNCE = 0.5
 CONFIG = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')),
                       'desktop-tts', 'config.json')
-VOICE_NAMES = ['云健·男', '云扬·男', '云夏·男', '晓伊·女', '晓晓·女', '晓萱·女']
-VOICE_IDS = {'云健·男': 'yunJian', '云扬·男': 'yunYang', '云夏·男': 'yunXia',
-             '晓伊·女': 'xiaoYi', '晓晓·女': 'xiaoXiao', '晓萱·女': 'xiaoXuan'}
+def _load_voice_meta():
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               'voices.json'), encoding='utf-8') as f:
+            data = json.load(f)
+        voices = data.get('voices', {})
+        sapi = data.get('sapi_voices', {})
+        names = [c.get('name') for c in voices.values() if c.get('name')]
+        ids = {c['name']: vid for vid, c in voices.items() if c.get('name')}
+        s_names = [c.get('name') for c in sapi.values() if c.get('name')]
+        s_ids = {c['name']: vid for vid, c in sapi.items() if c.get('name')}
+        if names and s_names:
+            return (names + s_names, dict(ids, **s_ids),
+                    data.get('speed_list') or SPEED_LIST,
+                    data.get('pitch_list') or PITCH_LIST)
+    except Exception:
+        pass
+    return VOICE_NAMES, VOICE_IDS, SPEED_LIST, PITCH_LIST
+
+
 SPEED_LIST = ['0.5', '0.7', '0.8', '0.9', '1.0', '1.2', '1.5', '2.0']
 PITCH_LIST = ['-15Hz', '-10Hz', '-5Hz', '+0Hz', '+5Hz', '+10Hz', '+15Hz']
+VOICE_NAMES = ['云健·男', '云扬·男', '云夏·男', '晓伊·女', '晓晓·女', '晓萱·女',
+               '晓晓·本地', '云希·本地']
+VOICE_IDS = {'云健·男': 'yunJian', '云扬·男': 'yunYang', '云夏·男': 'yunXia',
+             '晓伊·女': 'xiaoYi', '晓晓·女': 'xiaoXiao', '晓萱·女': 'xiaoXuan',
+             '晓晓·本地': 'xiaoXiaoLocal', '云希·本地': 'yunXiLocal'}
+VOICE_NAMES, VOICE_IDS, SPEED_LIST, PITCH_LIST = _load_voice_meta()
 
 
 class Player:
@@ -282,9 +305,12 @@ class App:
                                    bg='#1d4fc0', fg='white', relief='flat', padx=8)
         self.btn_add_app = tk.Button(row, text='此软件', command=self._add_app,
                                      bg='#1d4fc0', fg='white', relief='flat', padx=8)
+        self.btn_export = tk.Button(row, text='导出MP3', command=self.export_mp3,
+                                    bg='#1d4fc0', fg='white', relief='flat', padx=8)
         self.btn_read.pack(side='left', padx=2)
         self.btn_pause.pack(side='left', padx=2)
         self.btn_add_app.pack(side='left', padx=2)
+        self.btn_export.pack(side='left', padx=2)
         self.btn_stop.pack(side='left', padx=2)
         self.btn_close.pack(side='left', padx=2)
         self.win.bind('<ButtonPress-1>', self._on_win_press)
@@ -359,6 +385,8 @@ class App:
                            ('1GB', 1024), ('不限制', 0)):
             cache_menu.add_radiobutton(label=label, command=self._save_config,
                                        variable=self._cache_var, value=val)
+        cache_menu.add_separator()
+        cache_menu.add_command(label='打开缓存文件夹', command=self._open_cache)
         m.add_cascade(label='缓存上限', menu=cache_menu)
         filter_menu = tk.Menu(m, tearoff=0)
         for label, val in (('全部软件', 'all'), ('仅以下软件', 'whitelist'),
@@ -373,6 +401,15 @@ class App:
         m.add_separator()
         m.add_command(label='退出', command=self._quit_confirm)
         m.tk_popup(e.x_root, e.y_root)
+
+    def _open_cache(self):
+        d = os.path.join(os.path.dirname(os.path.abspath(
+            sys.executable if getattr(sys, 'frozen', False) else __file__)), 'cache')
+        try:
+            os.makedirs(d, exist_ok=True)
+            os.startfile(d)
+        except Exception as e:
+            log('open cache fail: %r' % e)
 
     def _toggle_grab(self):
         self._no_grab = self._no_grab_var.get()
@@ -530,13 +567,16 @@ class App:
                     self._drag_start = None
                     if max(abs(x - sx), abs(y - sy)) >= 8:
                         log('drag trigger from (%d,%d) to (%d,%d)' % (sx, sy, x, y))
-                        self.grabber.trigger((sx, sy))
+                        self.grabber.trigger((x, y))
         except Exception:
             pass
 
     def _on_key(self, key):
         try:
             from pynput import keyboard as kb
+            if key == kb.Key.esc:
+                self.win.after(0, self._show_ball)
+                return
             if key in (kb.Key.ctrl_l, kb.Key.ctrl_r):
                 self._ctrl_down = True
             elif self._ctrl_down and getattr(key, 'vk', None) == 65:
@@ -624,29 +664,80 @@ class App:
         self.lbl.config(text='合成中…')
         threading.Thread(target=self._read_worker, args=(text,), daemon=True).start()
 
-    def _read_worker(self, text):
+    def _synthesize(self, text):
         text = re.sub(r'[*#|~^_`{}\[\]\\]', '', text)
         chunks = [text[i:i + CHUNK] for i in range(0, len(text), CHUNK)]
         voice = VOICE_IDS[self.voice_var.get()]
         speed = float(self.speed_var.get())
         pitch = self.pitch_var.get()
-        wavs = []
+        files = []
+        for c in chunks:
+            r = requests.post(SERVER + '/tts',
+                              json={'text': c, 'speed': speed, 'voice': voice,
+                                    'pitch': pitch},
+                              timeout=600)
+            r.raise_for_status()
+            ext = 'wav' if r.headers.get('content-type', '').endswith('wav') else 'mp3'
+            tmp = os.path.join(tempfile.gettempdir(), 'dtts_%d.%s' % (time.time_ns(), ext))
+            with open(tmp, 'wb') as f:
+                f.write(r.content)
+            files.append(tmp)
+        return files
+
+    def _read_worker(self, text):
         try:
-            for c in chunks:
-                r = requests.post(SERVER + '/tts',
-                                  json={'text': c, 'speed': speed, 'voice': voice, 'pitch': pitch},
-                                  timeout=600)
-                r.raise_for_status()
-                ext = 'wav' if r.headers.get('content-type', '').endswith('wav') else 'mp3'
-                tmp = os.path.join(tempfile.gettempdir(), 'dtts_%d.%s' % (time.time_ns(), ext))
-                with open(tmp, 'wb') as f:
-                    f.write(r.content)
-                wavs.append(tmp)
+            wavs = self._synthesize(text)
         except Exception as e:
             self.win.after(0, lambda: self.lbl.config(text='失败: %s' % e))
             return
         self.win.after(0, lambda: self.lbl.config(text='朗读中… (可暂停/停止)'))
         self.player.play(wavs)
+
+    def export_mp3(self):
+        if not hasattr(self, 'cur_text') or not self.cur_text:
+            return
+        from tkinter import filedialog
+        path = filedialog.asksaveasfilename(
+            parent=self.win, title='导出 MP3', defaultextension='.mp3',
+            initialfile='朗读_%s.mp3' % time.strftime('%Y%m%d_%H%M%S'),
+            filetypes=[('MP3 音频', '*.mp3')])
+        if not path:
+            return
+        if not self.ensure_server():
+            self.lbl.config(text='服务启动失败')
+            return
+        self._save_config()
+        self.lbl.config(text='导出中…')
+        threading.Thread(target=self._export_worker, args=(self.cur_text, path),
+                         daemon=True).start()
+
+    def _export_worker(self, text, path):
+        try:
+            files = self._synthesize(text)
+            import shutil, subprocess
+            ff = shutil.which('ffmpeg')
+            parts = []
+            for f in files:
+                if f.endswith('.mp3'):
+                    parts.append(f)
+                elif ff:
+                    out = f[:-4] + '.mp3'
+                    subprocess.run([ff, '-y', '-i', f, '-b:a', '192k', out],
+                                   capture_output=True)
+                    parts.append(out)
+            if len(parts) != len(files):
+                self.win.after(0, lambda: self.lbl.config(
+                    text='含长文本段，需要 ffmpeg 转码'))
+                return
+            with open(path, 'wb') as out:
+                for p in parts:
+                    with open(p, 'rb') as src:
+                        out.write(src.read())
+        except Exception as e:
+            self.win.after(0, lambda: self.lbl.config(text='导出失败: %s' % e))
+            return
+        self.win.after(0, lambda: self.lbl.config(
+            text='已导出 %s' % os.path.basename(path)))
 
     def toggle_pause(self):
         if self.player.paused:

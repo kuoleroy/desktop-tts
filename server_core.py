@@ -7,25 +7,61 @@ import os
 import re
 import subprocess
 import sys
+import time
 import wave
 
-sys.path.insert(0, r'E:\open-source-research\CosyVoice')
-sys.path.insert(0, r'E:\open-source-research\CosyVoice\third_party\Matcha-TTS')
-os.chdir(r'E:\open-source-research\CosyVoice')
+APP_DIR = os.path.dirname(os.path.abspath(
+    sys.executable if getattr(sys, 'frozen', False) else __file__))
+
+
+def _load_env():
+    env = {}
+    try:
+        with open(os.path.join(APP_DIR, '.env'), encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                k, v = line.split('=', 1)
+                env[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return env
+
+
+_ENV = _load_env()
+
+
+def env_get(key, default):
+    return os.environ.get(key) or _ENV.get(key) or default
+
+
+COSYVOICE_HOME = env_get('COSYVOICE_HOME', '')
+if COSYVOICE_HOME and os.path.isdir(COSYVOICE_HOME):
+    sys.path.insert(0, COSYVOICE_HOME)
+    sys.path.insert(0, os.path.join(COSYVOICE_HOME, 'third_party', 'Matcha-TTS'))
+    try:
+        os.chdir(COSYVOICE_HOME)
+    except OSError:
+        pass
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-MODEL_DIR = r'E:\CosyVoiceModels\CosyVoice2-0.5B'
-REF_AUDIO = r'E:\IndexTTS2\refs\male_yunjian.wav'
-PROMPT_TEXT = '我站在大江边上，听着涛声一阵一阵。天色已经暗了，远处的船影渐渐模糊。'
+MODEL_DIR = env_get('MODEL_DIR', r'E:\CosyVoiceModels\CosyVoice2-0.5B')
+REF_AUDIO = env_get('REF_AUDIO', r'E:\IndexTTS2\refs\male_yunjian.wav')
+PROMPT_TEXT = env_get('PROMPT_TEXT', '我站在大江边上，听着涛声一阵一阵。天色已经暗了，远处的船影渐渐模糊。')
 SAMPLE_RATE = 24000
 MAX_BLOCK = 380
 EDGE_VOICE = 'zh-CN-YunjianNeural'
-EDGE_MAX_SINGLE = 2000
-CACHE_DIR = os.path.join(os.environ.get('TEMP', '.'), 'browsertts_cache')
+EDGE_MAX_SINGLE = env_get('EDGE_MAX_SINGLE', '2000')
+try:
+    EDGE_MAX_SINGLE = int(EDGE_MAX_SINGLE)
+except (TypeError, ValueError):
+    EDGE_MAX_SINGLE = 2000
+CACHE_DIR = os.path.join(APP_DIR, 'cache')
 CONFIG_PATH = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')),
                            'desktop-tts', 'config.json')
 
@@ -67,17 +103,48 @@ def clean_cache():
     except OSError:
         pass
 
-VOICES = {
-    'yunJian': {'name': '云健·男', 'edge': 'zh-CN-YunjianNeural',
-                'ref': r'E:\IndexTTS2\refs\male_yunjian.wav',
-                'prompt': '我站在大江边上，听着涛声一阵一阵。天色已经暗了，远处的船影渐渐模糊。'},
-    'yunYang': {'name': '云扬·男', 'edge': 'zh-CN-YunyangNeural', 'ref': None},
-    'yunXia': {'name': '云夏·男', 'edge': 'zh-CN-YunxiaNeural', 'ref': None},
-    'xiaoYi': {'name': '晓伊·女', 'edge': 'zh-CN-XiaoyiNeural',               'ref': r'E:\IndexTTS2\refs\female_xiaoyi_long.wav',
-               'prompt': '冬夜风轻，远处的灯一盏一盏地暗了。她站在窗前，把一条围巾挽了又挽，像是等人，又像是怕人看见。这些年走过的路，她都记得。有些话不必说出口，等天亮，自然会有人懂。'},
-    'xiaoXiao': {'name': '晓晓·女', 'edge': 'zh-CN-XiaoxiaoNeural', 'ref': None},
-    'xiaoXuan': {'name': '晓萱·女', 'edge': 'zh-CN-XiaoxuanNeural', 'ref': None},
-}
+def _load_voices():
+    fallback = {
+        'yunJian': {'name': '云健·男', 'edge': 'zh-CN-YunjianNeural', 'ref': None},
+        'yunYang': {'name': '云扬·男', 'edge': 'zh-CN-YunyangNeural', 'ref': None},
+        'yunXia': {'name': '云夏·男', 'edge': 'zh-CN-YunxiaNeural', 'ref': None},
+        'xiaoYi': {'name': '晓伊·女', 'edge': 'zh-CN-XiaoyiNeural', 'ref': None},
+        'xiaoXiao': {'name': '晓晓·女', 'edge': 'zh-CN-XiaoxiaoNeural', 'ref': None},
+        'xiaoXuan': {'name': '晓萱·女', 'edge': 'zh-CN-XiaoxuanNeural', 'ref': None},
+    }
+    try:
+        with open(os.path.join(APP_DIR, 'voices.json'), encoding='utf-8') as f:
+            data = json.load(f)
+        out = {}
+        for vid, cfg in data.get('voices', {}).items():
+            out[vid] = {'name': cfg.get('name', vid), 'edge': cfg.get('edge', ''),
+                        'ref': cfg.get('ref'), 'prompt': cfg.get('prompt')}
+        if out:
+            return out
+    except Exception:
+        pass
+    return fallback
+
+
+def _load_sapi_voices():
+    try:
+        with open(os.path.join(APP_DIR, 'voices.json'), encoding='utf-8') as f:
+            data = json.load(f)
+        out = {}
+        for vid, cfg in data.get('sapi_voices', {}).items():
+            if cfg.get('name') and cfg.get('sapi'):
+                out[vid] = {'name': cfg['name'], 'sapi': cfg['sapi']}
+        if out:
+            return out
+    except Exception:
+        pass
+    return {'xiaoXiaoLocal': {'name': '晓晓·本地', 'sapi': 'Microsoft Xiaoxiao (Natural)'},
+            'yunXiLocal': {'name': '云希·本地', 'sapi': 'Microsoft Yunxi (Natural)'}}
+
+
+VOICES = _load_voices()
+SAPI_VOICES = _load_sapi_voices()
+SAPI_PS1 = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sapi_proc.ps1')
 
 
 def cache_get(text, speed, voice, pitch):
@@ -133,8 +200,8 @@ def split_blocks(text, max_len=MAX_BLOCK):
 
 def synth_to_wav(model, text, speed, voice):
     cfg = VOICES[voice]
-    ref = cfg.get('ref') or VOICES['yunJian']['ref']
-    prompt = cfg.get('prompt') or VOICES['yunJian']['prompt']
+    ref = cfg.get('ref') or REF_AUDIO
+    prompt = cfg.get('prompt') or PROMPT_TEXT
     buf = io.BytesIO()
     wf = wave.open(buf, 'wb')
     wf.setnchannels(1)
@@ -201,6 +268,41 @@ def edge_audio(text, speed, voice, pitch):
     return data, media
 
 
+def sapi_audio(text, voice, speed):
+    import tempfile
+    t = os.path.join(tempfile.gettempdir(), 'dtts_in_%d.txt' % time.time_ns())
+    o = t[:-4] + '.wav'
+    try:
+        with open(t, 'wb') as f:
+            f.write(b'\xef\xbb\xbf' + text.encode('utf-8'))
+        rate = max(-10, min(10, int(round((speed - 1.0) * 20))))
+        p = subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                            '-File', SAPI_PS1, t, o, SAPI_VOICES[voice]['sapi'],
+                            str(rate)],
+                           capture_output=True, timeout=120,
+                           creationflags=CREATE_NO_WINDOW)
+        if p.returncode != 0 or not os.path.exists(o):
+            raise RuntimeError('sapi failed: %s' %
+                               p.stderr.decode('utf-8', 'replace')[:200])
+        with open(o, 'rb') as f:
+            return f.read()
+    finally:
+        for x in (t, o):
+            try:
+                os.remove(x)
+            except OSError:
+                pass
+
+
+def sapi_audio_cached(text, speed, voice):
+    cached = cache_get(text, speed, voice, '+0Hz')
+    if cached is not None:
+        return cached.split(b'\x00', 1)[1]
+    data = sapi_audio(text, voice, speed)
+    cache_set(text, speed, voice, '+0Hz', b'audio/wav\x00' + data)
+    return data
+
+
 class TTSReq(BaseModel):
     text: str
     speed: float = 0.9
@@ -223,8 +325,15 @@ def tts(req: TTSReq):
     text = req.text.strip()
     if not text:
         return Response(status_code=400)
-    if req.voice not in VOICES:
+    if req.voice not in VOICES and req.voice not in SAPI_VOICES:
         return Response(status_code=400, content='unknown voice')
+    if req.voice in SAPI_VOICES:
+        try:
+            data = sapi_audio_cached(text[:5000], req.speed, req.voice)
+            return Response(content=data, media_type='audio/wav')
+        except Exception as e:
+            print('sapi failed:', e, flush=True)
+            return Response(status_code=500, content=str(e))
     try:
         data, media = edge_audio(text[:5000], req.speed, req.voice, req.pitch)
         return Response(content=data, media_type=media)
