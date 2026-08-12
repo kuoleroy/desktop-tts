@@ -1,0 +1,178 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#stage {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  transition: opacity 0.25s ease;
+}
+#stage.model-hidden { opacity: 0; pointer-events: none; }
+
+#bubble {
+  position: absolute;
+  left: 50%;
+  top: 8px;
+  transform: translateX(-50%);
+  max-width: 320px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  padding: 10px 14px;
+  z-index: 10;
+  transition: opacity 0.15s, transform 0.15s;
+}
+#bubble.hidden { opacity: 0; pointer-events: none; transform: translateX(-50%) translateY(-6px); }
+
+/* ---- 控制面板（交互模式） ---- */
+#panel {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.92);
+  width: 250px;
+  background: rgba(255, 255, 255, 0.97);
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 14px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
+  z-index: 40;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+#panel.visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, -50%) scale(1);
+}
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid #eee;
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+}
+#panel-hint { font-size: 11px; font-weight: 400; color: #999; }
+.panel-body { padding: 10px; }
+.panel-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.p-btn {
+  flex: 1;
+  padding: 8px 6px;
+  border: 1px solid #d9d9d9;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 12px;
+  color: #333;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.p-btn:hover { background: #f0f2f5; border-color: #b8b8b8; }
+.p-btn.primary { background: #1677ff; border-color: #1677ff; color: #fff; }
+.p-btn.primary:hover { background: #0958d9; }
+.p-btn.danger { background: #fff; border-color: #ff4d4f; color: #ff4d4f; }
+.p-btn.danger:hover { background: #fff1f0; }
+.panel-section {
+  border-top: 1px solid #eee;
+  border-bottom: 1px solid #eee;
+  margin: 8px 0;
+  padding: 6px 2px;
+}
+.panel-section label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: #666;
+  padding: 4px 0;
+}
+.panel-section select {
+  font-size: 12px;
+  padding: 2px 4px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background: #fff;
+  max-width: 120px;
+  outline: none;
+}
+
+#bubble-text {
+  font-size: 13px;
+  line-height: 1.6;
+  color: #333;
+  max-height: 120px;
+  overflow: hidden;
+}
+.bubble-tail {
+  position: absolute;
+  left: 50%;
+  bottom: -8px;
+  transform: translateX(-50%);
+  border: 8px solid transparent;
+  border-top-color: rgba(255, 255, 255, 0.96);
+}
+
+#status {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.55);
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: 6px;
+  padding: 3px 8px;
+  z-index: 10;
+  display: none;
+}
+
+#win-sizes { display: inline-flex; gap: 4px; }
+.win-size {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+}
+.win-size.active { background: #1677ff; border-color: #1677ff; color: #fff; }
+
+#model-list {
+  position: absolute;
+  min-width: 180px;
+  max-height: 260px;
+  overflow-y: auto;
+  background: rgba(255, 255, 255, 0.97);
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+  padding: 6px;
+  z-index: 30;
+}
+#model-list.hidden { display: none; }
+.model-entry {
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #333;
+  cursor: pointer;
+}
+.model-entry:hover { background: #f0f2f5; }
+.model-entry.active { background: #e6f0ff; color: #1677ff; }

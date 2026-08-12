@@ -262,6 +262,10 @@ BTN_HI = '#4a5060'
 ACCENT = '#4f7cff'
 FONT = ('Microsoft YaHei', 9)
 FONT_B = ('Microsoft YaHei', 9, 'bold')
+BALL_S = 110
+TRANS = '#000001'
+APP_DIR = os.path.dirname(os.path.abspath(
+    sys.executable if getattr(sys, 'frozen', False) else __file__))
 
 
 def _option_menu(parent, var, values, width=8):
@@ -288,22 +292,118 @@ class App:
         self.win = tk.Tk()
         self.win.overrideredirect(True)
         self.win.attributes('-topmost', True)
-        self.win.configure(bg=BG)
+        self.win.configure(bg=TRANS)
+        try:
+            self.win.attributes('-transparentcolor', TRANS)
+        except Exception:
+            self.win.configure(bg=BG)
         self._cur_scale = None
         self._scale_fonts = []
+        self._pet_follow_off = False
+        self._pet_watch_job = None
+        self._skin_var = tk.StringVar(value='')
+        self._skin_name = ''
         self._build_ui()
+        if self._skin_name:
+            self._apply_skin(os.path.join(APP_DIR, 'assets', self._skin_name))
         self.grabber = Grabber(self.on_text, self._on_filter)
         self._last_click = (0, 0, 0.0)
         self._drag_start = None
         self._hook_global()
 
+    def _load_pet(self, path=None):
+        try:
+            from PIL import Image, ImageTk, ImageSequence
+            if path and os.path.exists(path):
+                pass
+            elif path:
+                return []
+            else:
+                path = ''
+                for name in ('pet.gif', 'pet.webp', 'pet.png'):
+                    p = os.path.join(APP_DIR, 'assets', name)
+                    if os.path.exists(p):
+                        path = p
+                        break
+                if not path:
+                    return []
+            im = Image.open(path)
+            frames = [f.convert('RGBA').resize((BALL_S - 14, BALL_S - 14),
+                                               Image.LANCZOS)
+                      for f in ImageSequence.Iterator(im)]
+            return [ImageTk.PhotoImage(f) for f in frames] if frames else []
+        except Exception:
+            pass
+        return []
+
+    def _apply_skin(self, path):
+        frames = self._load_pet(path)
+        if not frames:
+            return False
+        self._pet_frames = frames
+        self._pet_idx = 0
+        self._skin_name = os.path.basename(path)
+        self._skin_var.set(self._skin_name)
+        self.ball.config(image=frames[0], width=BALL_S - 14,
+                         height=BALL_S - 14, bg=TRANS, text='')
+        if self._pet_job is None:
+            self._pet_tick()
+        return True
+
+    def _pet_tick(self):
+        if not self._pet_frames:
+            return
+        self._pet_idx = (self._pet_idx + 1) % len(self._pet_frames)
+        self.ball.config(image=self._pet_frames[self._pet_idx])
+        self._pet_job = self.win.after(180, self._pet_tick)
+
+    def _pet_watch(self):
+        if self._pet_follow_off or not self.ball_frm.winfo_ismapped():
+            self._pet_watch_job = self.win.after(160, self._pet_watch)
+            return
+        try:
+            mx, my = self.win.winfo_pointerxy()
+            pt = ctypes.wintypes.POINT(mx, my)
+            hwnd = ctypes.windll.user32.WindowFromPoint(pt)
+            root = ctypes.windll.user32.GetAncestor(hwnd, 2)
+            cls = ctypes.create_unicode_buffer(64)
+            ctypes.windll.user32.GetClassNameW(root, cls, 64)
+            if cls.value in ('Progman', 'WorkerW', 'Shell_TrayWnd'):
+                self._pet_watch_job = self.win.after(160, self._pet_watch)
+                return
+            rect = ctypes.wintypes.RECT()
+            ctypes.windll.user32.GetWindowRect(root, ctypes.byref(rect))
+            wx, wy = self.win.winfo_x(), self.win.winfo_y()
+            w, h = self.win.winfo_width(), self.win.winfo_height()
+            cx, cy = wx + w // 2, wy + h // 2
+            dx, dy = mx - cx, my - cy
+            dist = (dx * dx + dy * dy) ** 0.5
+            if dist < 330 and dist > 55:
+                s = 0.2
+                nx = cx + dx * s - w // 2
+                ny = cy + dy * s - h // 2
+                nx = max(rect.left, min(nx, rect.right - w))
+                ny = max(rect.top, min(ny, rect.bottom - h))
+                self.win.geometry('+%d+%d' % (int(nx), int(ny)))
+        except Exception:
+            pass
+        self._pet_watch_job = self.win.after(40, self._pet_watch)
+
     def _build_ui(self):
-        self.ball_frm = tk.Frame(self.win, bg=BG)
-        self.ball = tk.Label(self.ball_frm, text='读', width=4, height=2, bg=ACCENT,
-                             fg='white', font=('Microsoft YaHei', 12, 'bold'),
-                             cursor='hand2')
-        self.ball.pack()
-        self.ball.configure(cursor='hand2')
+        self.ball_frm = tk.Frame(self.win, bg=TRANS)
+        self._pet_frames = []
+        self._pet_idx = 0
+        self._pet_job = None
+        self.ball = tk.Label(self.ball_frm, bg=TRANS, cursor='hand2')
+        pet = self._load_pet()
+        if pet:
+            self.ball.config(image=pet[0], width=BALL_S - 14, height=BALL_S - 14)
+            self._pet_frames = pet
+            self._pet_tick()
+        else:
+            self.ball.config(text='读', width=4, height=2, bg=ACCENT,
+                             fg='white', font=('Microsoft YaHei', 12, 'bold'))
+        self.ball.pack(pady=3)
 
         self.panel_frm = tk.Frame(self.win, bg=BG, highlightbackground=BG2,
                                   highlightthickness=1)
@@ -314,14 +414,6 @@ class App:
         self._opts_menus = []
         self._buttons = []
         self.voice_var = tk.StringVar(value='云健·男')
-        tk.Label(opts, text='音色', bg=BG, fg=FG2,
-                 font=FONT).pack(side='left')
-        tk.Label(opts, text='语速', bg=BG, fg=FG2,
-                 font=FONT).pack(side='left')
-        tk.Label(opts, text='语调', bg=BG, fg=FG2,
-                 font=FONT).pack(side='left')
-        for l in opts.winfo_children():
-            self._opts_labels.append(l)
         self.speed_var = tk.StringVar(value='0.9')
         self.pitch_var = tk.StringVar(value='+0Hz')
         self._opts_menus = [None] * 3
@@ -400,6 +492,8 @@ class App:
                 self._filter_mode_var.set(cfg['filter_mode'])
             if isinstance(cfg.get('filter_apps'), list):
                 self.filter_apps = [a.lower() for a in cfg['filter_apps']]
+            if isinstance(cfg.get('skin'), str) and cfg['skin']:
+                self._skin_name = cfg['skin']
         except Exception:
             pass
 
@@ -412,12 +506,14 @@ class App:
                            'pitch': self.pitch_var.get(),
                            'cache_limit': self._cache_var.get(),
                            'filter_mode': self._filter_mode_var.get(),
-                           'filter_apps': self.filter_apps},
+                           'filter_apps': self.filter_apps,
+                           'skin': self._skin_name},
                           f, ensure_ascii=False)
         except Exception:
             pass
 
     def _on_win_press(self, e):
+        self._pet_follow_off = True
         w, h = self.win.winfo_width(), self.win.winfo_height()
         bar = getattr(self, '_resize_bar', None)
         self._resizing = (w > 60 and self.panel_frm.winfo_ismapped()
@@ -451,6 +547,7 @@ class App:
                 self._last_ball_click = now
         self._off = None
         self._resizing = False
+        self._pet_follow_off = False
 
     def _menu(self, e):
         m = tk.Menu(self.win, tearoff=0, bg=BG2, fg=FG,
@@ -475,6 +572,20 @@ class App:
         filter_menu.add_separator()
         filter_menu.add_command(label='管理列表…', command=self._open_filter_mgr)
         m.add_cascade(label='朗读范围', menu=filter_menu)
+        skin_menu = tk.Menu(m, tearoff=0, bg=BG2, fg=FG,
+                            activebackground=ACCENT, activeforeground='white', bd=0)
+        skins = [f for f in sorted(os.listdir(os.path.join(APP_DIR, 'assets')))
+                 if f.lower().endswith(('.gif', '.webp', '.png'))
+                 and not f.lower().startswith('preview')]
+        if skins:
+            for s in skins:
+                skin_menu.add_radiobutton(
+                    label=s, variable=self._skin_var, value=s,
+                    command=lambda s=s: self._apply_skin(
+                        os.path.join(APP_DIR, 'assets', s)))
+        else:
+            skin_menu.add_command(label='(assets 下没有皮肤)', state='disabled')
+        m.add_cascade(label='换皮肤', menu=skin_menu)
         m.add_checkbutton(label='禁止识别', command=self._toggle_grab,
                           variable=self._no_grab_var)
         m.add_separator()
@@ -608,16 +719,17 @@ class App:
         w, h = self.win.winfo_width(), self.win.winfo_height()
         x, y = self.win.winfo_x(), self.win.winfo_y()
         if w < 2 or h < 2:
-            w, h = 70, 70
+            w, h = BALL_S, BALL_S
         x, y = self._clamp_pos(x, y, w, h)
-        self.win.geometry('70x70+%d+%d' % (x, y))
+        self.win.geometry('%dx%d+%d+%d' % (BALL_S, BALL_S, x, y))
 
     def _show_ball_home(self):
         self._panel_h = None
         self._show_ball()
         sw = self.win.winfo_screenwidth()
         sh = self.win.winfo_screenheight()
-        self.win.geometry('70x70+%d+%d' % (sw - 100, sh - 140))
+        self.win.geometry('%dx%d+%d+%d' % (BALL_S, BALL_S,
+                                           sw - BALL_S - 30, sh - BALL_S - 70))
 
     def _show_panel(self):
         self.ball_frm.pack_forget()
@@ -901,6 +1013,7 @@ class App:
 
     def run(self):
         self._show_ball_home()
+        self._pet_watch_job = self.win.after(200, self._pet_watch)
         self.win.mainloop()
 
 

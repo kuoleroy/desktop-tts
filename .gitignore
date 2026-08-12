@@ -1,5 +1,22 @@
-﻿cache/
-.env
-@AutomationLog.txt
-*.pyc
+﻿# ---- 运行产物 / 缓存 ----
+cache/
+tts_cache/
 __pycache__/
+*.pyc
+@AutomationLog.txt
+
+# ---- 日志 / 调试 / 截图 ----
+*.log
+build.err
+diag.json
+verify*.png
+panel_shot.png
+web_req.log
+tools/exp/
+
+# ---- 环境 / 本地配置 ----
+.env
+
+# ---- Tauri 构建产物 ----
+src-tauri/target/
+src-tauri/gen/schemas/
