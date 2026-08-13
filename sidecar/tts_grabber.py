@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """全局选区抓取独立进程 —— 纯事件驱动版（无鼠标钩子，零全局监控）。
 
-不再监控鼠标，改用两条系统主动通知：
+不再监控鼠标，采用行业标准的「选区变化事件触发 + 模拟复制」方案：
 1. UIA 文本选择变化事件（UIA_Text_TextSelectionChangedEventId=20014）：
-   支持 UIA 的应用（记事本/浏览器/Word/VS Code 等）里拖选文字时，系统主动通知，
-   直接读事件发送者的 TextPattern 选区，不遍历、不拦截鼠标。
-2. 剪贴板变化监听（WM_CLIPBOARDUPDATE）：
-   不支持 UIA 的应用（如部分 IDE），用户手动 Ctrl+C 复制时系统通知，读取剪贴板文本。
-   绝不模拟按键，不干预系统输入。
+   支持 UIA 的应用（记事本/浏览器/Word/VS Code 等）里拖选文字时，系统主动通知。
+   UIA 事件仅作「选区变化」触发源；能直接读到 TextPattern 选区就直读（不碰剪贴板），
+   读不到则自动模拟一次 Ctrl+C（SendInput 完整按下/释放，finally 强制释放防锁键），
+   读取剪贴板文本后完整还原剪贴板所有格式（文本/图片/文件等，接近无损）。
+2. 不再监听剪贴板变化：用户手动 Ctrl+C 是其主动复制行为，不触发悬浮框。
 
 - 进程默认待命（armed=False），收到 {"cmd":"arm"} 后才响应；收到 {"cmd":"disarm"} 停止响应。
 - 读到的文字以 NDJSON 上报 Rust（移动悬浮框 + 填充文本）。
@@ -30,7 +30,6 @@ TextPatternId = 10014
 UIA_Text_TextSelectionChangedEventId = 20014
 TreeScope_Subtree = 4
 # 窗口消息
-WM_CLIPBOARDUPDATE = 0x031D
 WM_TIMER = 0x0113
 DEBOUNCE_MS = 350  # 选择事件高频触发，防抖后只读一次
 DEBOUNCE_ID = 1
@@ -95,6 +94,233 @@ def _cursor_pos():
         return (0, 0)
 
 
+def _fg_window_info():
+    """当前前台窗口信息（hwnd/类名/标题），诊断模拟复制是否发到了目标应用。"""
+    try:
+        user32 = ctypes.windll.user32
+        user32.GetForegroundWindow.restype = ctypes.wintypes.HWND
+        user32.GetForegroundWindow.argtypes = []
+        h = user32.GetForegroundWindow()
+        if not h:
+            return "fg=0"
+        user32.GetClassNameW.restype = ctypes.c_int
+        user32.GetClassNameW.argtypes = [ctypes.wintypes.HWND, ctypes.c_wchar_p, ctypes.c_int]
+        user32.GetWindowTextW.restype = ctypes.c_int
+        user32.GetWindowTextW.argtypes = [ctypes.wintypes.HWND, ctypes.c_wchar_p, ctypes.c_int]
+        cls = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(h, cls, 256)
+        title = ctypes.create_unicode_buffer(256)
+        user32.GetWindowTextW(h, title, 256)
+        return "fg=0x%X cls=%s title=%s" % (h, cls.value, title.value)
+    except Exception:
+        return "fg=?"
+
+
+# ---- 模拟 Ctrl+C（SendInput 完整按键序列 + keybd_event 兜底，finally 强制释放，绝不锁 Ctrl）----
+def _send_ctrl_c():
+    VK_CONTROL = 0x11
+    VK_C = 0x43
+    KEYEVENTF_KEYUP = 0x0002
+    INPUT_KEYBOARD = 1
+
+    class KEYBDINPUT(ctypes.Structure):
+        _fields_ = [
+            ("wVk", ctypes.c_ushort),
+            ("wScan", ctypes.c_ushort),
+            ("dwFlags", ctypes.c_uint),
+            ("time", ctypes.c_uint),
+            ("dwExtraInfo", ctypes.c_void_p),
+        ]
+
+    class MOUSEINPUT(ctypes.Structure):
+        _fields_ = [
+            ("dx", ctypes.c_long),
+            ("dy", ctypes.c_long),
+            ("mouseData", ctypes.c_uint),
+            ("dwFlags", ctypes.c_uint),
+            ("time", ctypes.c_uint),
+            ("dwExtraInfo", ctypes.c_void_p),
+        ]
+
+    class HARDWAREINPUT(ctypes.Structure):
+        _fields_ = [
+            ("uMsg", ctypes.c_uint),
+            ("wParamL", ctypes.c_ushort),
+            ("wParamH", ctypes.c_ushort),
+        ]
+
+    # 必须与原生 x64 INPUT 完全一致（union 取最大 MOUSEINPUT 32B，
+    # 总 sizeof=40B）；此前 union 只有 KEYBDINPUT(24B) 导致 sizeof=32，
+    # cbSize 传错使 SendInput 恒返回 0（事件全部被拒收）。
+    class _INPUTUNION(ctypes.Union):
+        _fields_ = [
+            ("mi", MOUSEINPUT),
+            ("ki", KEYBDINPUT),
+            ("hi", HARDWAREINPUT),
+        ]
+
+    class INPUT(ctypes.Structure):
+        _fields_ = [("type", ctypes.c_uint), ("u", _INPUTUNION)]
+
+    def _in(vk, flags):
+        inp = INPUT()
+        inp.type = INPUT_KEYBOARD
+        inp.u.ki.wVk = vk
+        inp.u.ki.wScan = 0
+        inp.u.ki.dwFlags = flags
+        inp.u.ki.time = 0
+        inp.u.ki.dwExtraInfo = None
+        return inp
+
+    user32 = ctypes.windll.user32
+    # 诊断：模拟复制前记录前台窗口，判断按键是否发到了目标应用
+    dbg("  [send] %s" % _fg_window_info())
+
+    sent = 0
+    try:
+        user32.SendInput.restype = ctypes.c_uint
+        user32.SendInput.argtypes = [ctypes.c_uint, ctypes.POINTER(INPUT), ctypes.c_int]
+        ctrl_down = _in(VK_CONTROL, 0)
+        c_down = _in(VK_C, 0)
+        c_up = _in(VK_C, KEYEVENTF_KEYUP)
+        ctrl_up = _in(VK_CONTROL, KEYEVENTF_KEYUP)
+        arr = (INPUT * 4)(ctrl_down, c_down, c_up, ctrl_up)
+        sent = user32.SendInput(4, arr, ctypes.sizeof(INPUT))
+        dbg("  [send] SendInput returned %d/4" % sent)
+    except Exception as e:
+        dbg("  [send] SendInput raised: %r" % e)
+        sent = 0
+    finally:
+        # 异常/被拦截也强制释放 Ctrl 与 C，避免系统级按键卡死
+        try:
+            user32.SendInput.restype = ctypes.c_uint
+            user32.SendInput.argtypes = [ctypes.c_uint, ctypes.POINTER(INPUT), ctypes.c_int]
+            force_up = (INPUT * 2)(_in(VK_C, KEYEVENTF_KEYUP), _in(VK_CONTROL, KEYEVENTF_KEYUP))
+            user32.SendInput(2, force_up, ctypes.sizeof(INPUT))
+        except Exception:
+            pass
+
+    if sent != 4:
+        # 回退：keybd_event（部分环境对 SendInput 有权限/驱动拦截，keybd_event 更宽松）
+        dbg("  [send] SendInput failed (%d/4), fallback to keybd_event" % sent)
+        try:
+            user32.keybd_event.restype = ctypes.c_void_p
+            user32.keybd_event.argtypes = [
+                ctypes.c_ubyte, ctypes.c_ubyte, ctypes.c_uint, ctypes.c_void_p]
+            user32.keybd_event(VK_CONTROL, 0, 0, 0)
+            time.sleep(0.01)
+            user32.keybd_event(VK_C, 0, 0, 0)
+            time.sleep(0.01)
+            user32.keybd_event(VK_C, 0, KEYEVENTF_KEYUP, 0)
+            user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+        except Exception as e:
+            dbg("  [send] keybd_event fallback raised: %r" % e)
+
+
+# ---- 剪贴板完整备份/还原（自动 Ctrl+C 后按行业标准还原所有格式，接近无损）----
+def _backup_clipboard():
+    """枚举剪贴板全部格式并拷贝原始字节，返回 [(format, bytes), ...]。
+
+    对 GlobalLock 失败的 GDI 句柄格式（如旧式 CF_BITMAP）自动跳过；
+    现代应用复制图片多用 CF_DIB/CF_HTML/私有格式，均为全局内存，可完整备份。
+    """
+    GMEM_MOVEABLE = 0x0002
+    GMEM_ZEROINIT = 0x0040
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    user32.OpenClipboard.restype = ctypes.c_int
+    user32.OpenClipboard.argtypes = [ctypes.wintypes.HWND]
+    user32.EnumClipboardFormats.restype = ctypes.c_uint
+    user32.EnumClipboardFormats.argtypes = [ctypes.c_uint]
+    user32.GetClipboardData.restype = ctypes.wintypes.HANDLE
+    user32.GetClipboardData.argtypes = [ctypes.c_uint]
+    user32.CloseClipboard.restype = ctypes.c_int
+    user32.CloseClipboard.argtypes = []
+    kernel32.GlobalSize.restype = ctypes.c_size_t
+    kernel32.GlobalSize.argtypes = [ctypes.wintypes.HGLOBAL]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalLock.argtypes = [ctypes.wintypes.HGLOBAL]
+    kernel32.GlobalUnlock.restype = ctypes.c_int
+    kernel32.GlobalUnlock.argtypes = [ctypes.wintypes.HGLOBAL]
+    items = []
+    try:
+        if not user32.OpenClipboard(None):
+            return items
+        try:
+            fmt = 0
+            while True:
+                fmt = user32.EnumClipboardFormats(fmt)
+                if fmt == 0:
+                    break
+                h = user32.GetClipboardData(fmt)
+                if not h:
+                    continue
+                size = kernel32.GlobalSize(h)
+                if not size:
+                    continue
+                p = kernel32.GlobalLock(h)
+                if not p:
+                    continue
+                try:
+                    data = ctypes.string_at(p, size)
+                finally:
+                    kernel32.GlobalUnlock(h)
+                items.append((fmt, data))
+        finally:
+            user32.CloseClipboard()
+    except Exception:
+        pass
+    return items
+
+
+def _restore_clipboard(items):
+    """将 _backup_clipboard 的结果重放回剪贴板（重建所有格式）。"""
+    if not items:
+        return
+    GMEM_MOVEABLE = 0x0002
+    GMEM_ZEROINIT = 0x0040
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    user32.OpenClipboard.restype = ctypes.c_int
+    user32.OpenClipboard.argtypes = [ctypes.wintypes.HWND]
+    user32.EmptyClipboard.restype = ctypes.c_int
+    user32.EmptyClipboard.argtypes = []
+    user32.SetClipboardData.restype = ctypes.wintypes.HANDLE
+    user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.wintypes.HANDLE]
+    user32.CloseClipboard.restype = ctypes.c_int
+    user32.CloseClipboard.argtypes = []
+    kernel32.GlobalAlloc.restype = ctypes.wintypes.HGLOBAL
+    kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalLock.argtypes = [ctypes.wintypes.HGLOBAL]
+    kernel32.GlobalUnlock.restype = ctypes.c_int
+    kernel32.GlobalUnlock.argtypes = [ctypes.wintypes.HGLOBAL]
+    kernel32.GlobalFree.restype = ctypes.wintypes.HGLOBAL
+    kernel32.GlobalFree.argtypes = [ctypes.wintypes.HGLOBAL]
+    try:
+        if not user32.OpenClipboard(None):
+            return
+        try:
+            user32.EmptyClipboard()
+            for fmt, data in items:
+                h = kernel32.GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, len(data))
+                if not h:
+                    continue
+                p = kernel32.GlobalLock(h)
+                if p:
+                    try:
+                        ctypes.memmove(p, data, len(data))
+                    finally:
+                        kernel32.GlobalUnlock(h)
+                # SetClipboardData 成功后句柄归剪贴板所有；失败需释放防泄漏
+                if not user32.SetClipboardData(fmt, h):
+                    kernel32.GlobalFree(h)
+        finally:
+            user32.CloseClipboard()
+    except Exception:
+        pass
+
+
 def _element_anchor(el, fallback):
     """取选区包围盒下方作为悬浮框位置；失败用 fallback（鼠标位置）。"""
     try:
@@ -119,12 +345,14 @@ def main():
     armed = {"on": False}
     # 待处理抓取（防抖后消费）
     pending = {"element": None, "dirty": False}
-    # 上次上报文本（去重，避免 Ctrl+C 悬浮框复制引发的重复上报）
+    # 上次上报文本（去重，避免连续选区事件对同一文本重复上报）
     last_text = [""]
     # 隐藏窗口句柄：UIA 回调线程经它投递防抖定时器到主线程消息泵
     hwnd_box = {"hwnd": None}
     # 首次收到 UIA 20014 事件的诊断标记（避免刷屏）
     seen_uia = {"hit": False}
+    # 自动 Ctrl+C 兜底：busy 防并发/递归（用户手动 Ctrl+C 不触发抓取，无剪贴板监听）
+    auto_copy = {"busy": False}
 
     # ---- STA 主线程 + UIA 事件注册（必须在主线程，事件依赖其消息泵）----
     ctypes.windll.ole32.CoInitializeEx(None, COINIT_APARTMENTTHREADED)
@@ -154,6 +382,8 @@ def main():
             if eventId != UIA_Text_TextSelectionChangedEventId:
                 return
             if not armed["on"]:
+                # 诊断：区分「事件没触发」与「事件触发但抓取被关闭」
+                dbg("UIA 20014 received but disarmed, ignored")
                 return
             if not seen_uia["hit"]:
                 seen_uia["hit"] = True
@@ -190,41 +420,119 @@ def main():
     except Exception as e:
         dbg("AddAutomationEventHandler failed: %r" % e)
 
-    # ---- 从 UIA 元素读取选区文字 ----
-    def _read_from_element(el):
+    # ---- 从 UIA 元素读取选区文字（分步诊断，避免静默吞异常）----
+    def _read_from_element(el, tag):
+        # 1) 取 TextPattern
         try:
             pat = el.GetCurrentPattern(TextPatternId)
-            if not pat:
-                return ''
-            pat = pat.QueryInterface(UIA.IUIAutomationTextPattern)
-            ranges = pat.GetSelection()
-            parts = []
-            n = ranges.Length
-            for i in range(n):
-                r = ranges.GetElement(i)
-                t = r.GetText(-1) or ''
-                if t:
-                    parts.append(t)
-            return ''.join(parts)
-        except Exception:
+        except Exception as e:
+            dbg("  [%s] GetCurrentPattern failed: %r" % (tag, e))
             return ''
+        if not pat:
+            dbg("  [%s] GetCurrentPattern -> None (element has no TextPattern)" % tag)
+            return ''
+        # 2) QueryInterface
+        try:
+            tp = pat.QueryInterface(UIA.IUIAutomationTextPattern)
+        except Exception as e:
+            dbg("  [%s] QueryInterface TextPattern failed: %r" % (tag, e))
+            return ''
+        # 3) GetSelection（comtypes 可能返回 COMArray 或普通 list，两者都兼容）
+        try:
+            ranges = tp.GetSelection()
+        except Exception as e:
+            dbg("  [%s] GetSelection failed: %r" % (tag, e))
+            return ''
+        if ranges is None:
+            dbg("  [%s] GetSelection -> None" % tag)
+            return ''
+        try:
+            n = ranges.Length
+        except Exception:
+            try:
+                n = len(ranges)
+            except Exception as e:
+                dbg("  [%s] ranges.Length/len failed: %r" % (tag, e))
+                return ''
+        if n <= 0:
+            dbg("  [%s] GetSelection -> %d ranges (empty)" % (tag, n))
+            return ''
+        parts = []
+        for i in range(n):
+            try:
+                r = ranges.GetElement(i)
+            except Exception:
+                try:
+                    r = ranges[i]
+                except Exception as e:
+                    dbg("  [%s] ranges[%d] failed: %r" % (tag, i, e))
+                    continue
+            try:
+                # 部分 UIA 实现不接受 -1，先用 -1 再用大数兜底
+                t = r.GetText(-1) or r.GetText(1000000) or ''
+            except Exception as e:
+                dbg("  [%s] range[%d] GetText failed: %r" % (tag, i, e))
+                continue
+            if t:
+                parts.append(t)
+        dbg("  [%s] ranges=%d text_len=%d" % (tag, n, sum(len(p) for p in parts)))
+        return ''.join(parts)
 
-    # ---- 执行一次抓取（防抖定时器触发 / 剪贴板变化触发）----
+    # ---- 自动 Ctrl+C 兜底：UIA 读不到选区时模拟复制，读取后完整还原剪贴板 ----
+    def _auto_copy_fallback():
+        if auto_copy["busy"]:
+            return ''
+        auto_copy["busy"] = True
+        try:
+            before = _read_clipboard_text()
+            backup = _backup_clipboard()  # 完整备份所有格式（文本/图片/文件等）
+            _send_ctrl_c()
+            # 轮询等待目标应用完成复制（剪贴板内容变化且非原内容）
+            text = ''
+            deadline = time.time() + 0.8
+            while time.time() < deadline:
+                t = _read_clipboard_text()
+                if t and t != before:
+                    text = t
+                    break
+                time.sleep(0.03)
+            # 完整还原剪贴板（不打扰用户内容，接近无损）
+            if text:
+                _restore_clipboard(backup)
+            dbg("  [autocopy] before_len=%d got_len=%d formats=%d"
+                % (len(before), len(text), len(backup)))
+            return text
+        except Exception as e:
+            dbg("  [autocopy] failed: %r" % e)
+            return ''
+        finally:
+            auto_copy["busy"] = False
+
+    # ---- 执行一次抓取（UIA 选区变化事件触发）----
     def _do_grab(source):
         anchor = _cursor_pos()
         text = ''
-        if source == "uia" and pending["element"] is not None:
+        if pending["element"] is not None:
             el = pending["element"]
             pending["element"] = None
             pending["dirty"] = False
             try:
-                text = _read_from_element(el)
+                text = _read_from_element(el, "uia")
             except Exception:
                 text = ''
+            if not text:
+                # 兜底：GetSelection 只对当前拥有焦点的文本控件有效，
+                # sender 元素读不到时改从当前焦点元素读选区。
+                try:
+                    foc = uia.GetFocusedElement()
+                    text = _read_from_element(foc, "focus")
+                except Exception as e:
+                    dbg("  [focus] GetFocusedElement failed: %r" % e)
+            if not text:
+                # 最终兜底：自动模拟 Ctrl+C 读剪贴板（读取后完整还原，不打扰用户）
+                text = _auto_copy_fallback()
             dbg("uia consumed, read len=%d" % len(text))
             anchor = _element_anchor(el, anchor)
-        elif source == "clip":
-            text = _read_clipboard_text()
         text = ' '.join(text.split())[:MAX_GRAB_CHARS]
         if len(text) < 2 or text == last_text[0]:
             return
@@ -268,10 +576,6 @@ def main():
 
     @WndProc
     def _wndproc(hwnd, uMsg, wParam, lParam):
-        if uMsg == WM_CLIPBOARDUPDATE:
-            if armed["on"]:
-                threading.Thread(target=_do_grab, args=("clip",), daemon=True).start()
-            return 0
         if uMsg == WM_TIMER and wParam == DEBOUNCE_ID:
             user32 = ctypes.windll.user32
             user32.KillTimer(hwnd_box["hwnd"], DEBOUNCE_ID)
@@ -309,8 +613,6 @@ def main():
         ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
         ctypes.wintypes.HWND, ctypes.wintypes.HMENU, ctypes.wintypes.HINSTANCE,
         ctypes.c_void_p]
-    user32.AddClipboardFormatListener.restype = ctypes.c_int
-    user32.AddClipboardFormatListener.argtypes = [ctypes.wintypes.HWND]
 
     wc = WNDCLASSW()
     wc.lpfnWndProc = ctypes.cast(_wndproc, ctypes.c_void_p)
@@ -321,16 +623,14 @@ def main():
         0, 0, 0, 0, None, None, None, None)
     if hwnd:
         hwnd_box["hwnd"] = hwnd
-        user32.AddClipboardFormatListener(hwnd)
-        dbg("clipboard listener installed (hwnd=%s)" % hwnd)
     else:
-        dbg("hidden window create failed; clipboard fallback off")
+        dbg("hidden window create failed; UIA debounce timer off")
 
     out({"id": 0, "ok": True, "grab": False, "text": "", "x": None, "y": None,
          "note": "grabber started (event mode, no mouse hook)"})
-    dbg("grabber ready: UIA selection events + clipboard listener")
+    dbg("grabber ready: UIA selection events + auto-copy fallback")
 
-    # ---- 主消息泵（驱动 UIA 事件与剪贴板通知，无任何鼠标钩子）----
+    # ---- 主消息泵（驱动 UIA 事件与防抖定时器，无任何鼠标钩子/剪贴板监听）----
     msg = ctypes.wintypes.MSG()
     while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
         user32.TranslateMessage(ctypes.byref(msg))
