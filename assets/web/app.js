@@ -72,34 +72,46 @@ const loader = new GLTFLoader();
 loader.register((parser) => new VRMLoaderPlugin(parser));
 
 async function loadVRM(url) {
-  try {
-    const gltf = await loader.loadAsync(url);
-    const loaded = gltf.userData.vrm;
-    VRMUtils.removeUnnecessaryVertices(loaded.scene);
-    VRMUtils.combineSkeletons(loaded.scene);
-    if (loaded.meta?.metaVersion === "0") {
-      VRMUtils.rotateVRM0(loaded.scene);
+  // WebView2 偶发加载失败（asset 协议/网络抖动）会整窗不显示模型，自动重试避免「模型不见了」。
+  const MAX_ATTEMPTS = 3;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const gltf = await loader.loadAsync(url);
+      const loaded = gltf.userData.vrm;
+      VRMUtils.removeUnnecessaryVertices(loaded.scene);
+      VRMUtils.combineSkeletons(loaded.scene);
+      if (loaded.meta?.metaVersion === "0") {
+        VRMUtils.rotateVRM0(loaded.scene);
+      }
+      loaded.scene.rotation.y = Math.PI;
+      if (vrm) {
+        scene.remove(vrm.scene);
+        vrm.scene.traverse((o) => {
+          if (o.geometry) o.geometry.dispose();
+          if (o.material) {
+            const mats = Array.isArray(o.material) ? o.material : [o.material];
+            mats.forEach((m) => m.dispose());
+          }
+        });
+      }
+      vrm = loaded;
+      scene.add(vrm.scene);
+      armsDown = false;
+      currentModel = url.split("/").pop();
+      // 加载默认舞蹈（VMD 动作），供静置时播放
+      if (!danceName) loadDance(DEFAULT_DANCE);
+      bubble(`你好，我是桌面小精灵，请多多关照！`, 2600);
+      return;
+    } catch (e) {
+      // 记录到诊断心跳（dev server 的 [diag] 会带出 errs），并重试
+      window.__errs.push(`loadVRM ${attempt}/${MAX_ATTEMPTS}: ${e.message} @ ${url}`);
+      console.error("[loadVRM]", attempt, e);
+      if (attempt < MAX_ATTEMPTS) {
+        await new Promise((r) => setTimeout(r, 1500));
+      } else {
+        setStatus("加载失败: " + e.message);
+      }
     }
-    loaded.scene.rotation.y = Math.PI;
-    if (vrm) {
-      scene.remove(vrm.scene);
-      vrm.scene.traverse((o) => {
-        if (o.geometry) o.geometry.dispose();
-        if (o.material) {
-          const mats = Array.isArray(o.material) ? o.material : [o.material];
-          mats.forEach((m) => m.dispose());
-        }
-      });
-    }
-    vrm = loaded;
-    scene.add(vrm.scene);
-    armsDown = false;
-    currentModel = url.split("/").pop();
-    // 加载默认舞蹈（VMD 动作），供静置时播放
-    if (!danceName) loadDance(DEFAULT_DANCE);
-    bubble(`你好，我是桌面小精灵，请多多关照！`, 2600);
-  } catch (e) {
-    setStatus("加载失败: " + e.message);
   }
 }
 
