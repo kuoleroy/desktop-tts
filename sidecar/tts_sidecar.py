@@ -187,10 +187,43 @@ def _synth(text, fname):
             raise RuntimeError(f"edge-tts: {cause!r}; sapi: {e2!r}")
 
 
+# edge-tts 单次合成上限（字）。超长文本切成多块，每块独立合成、依次播放
+MAX_BLOCK = 2000
+
+
+def split_blocks(text, max_len=MAX_BLOCK):
+    """把长文本切成 max_len 字以内的若干块（保留段落边界，避免切半句话）。"""
+    if len(text) <= max_len:
+        return [text]
+    blocks = []
+    cur = ""
+    # 按换行优先切分，保持段落完整；否则按最大长度硬切
+    for para in text.split("\n"):
+        if not para:
+            continue
+        if cur and len(cur) + 1 + len(para) <= max_len:
+            cur += "\n" + para
+            continue
+        if cur:
+            blocks.append(cur)
+            cur = ""
+        # 单个段落仍超长时，按字符硬切
+        while len(para) > max_len:
+            blocks.append(para[:max_len])
+            para = para[max_len:]
+        cur = para
+    if cur:
+        blocks.append(cur)
+    return [b for b in blocks if b.strip()]
+
+
 def _tts(text):
-    name = f"t{int(time.time() * 1000)}"
-    p = _synth(text, os.path.join(CACHE, name + ".mp3"))
-    return os.path.basename(p)
+    base = f"t{int(time.time() * 1000)}"
+    files = []
+    for i, block in enumerate(split_blocks(text)):
+        p = _synth(block, os.path.join(CACHE, f"{base}_{i}.mp3"))
+        files.append(os.path.basename(p))
+    return files
 
 
 def _export_mp3(text):
@@ -204,8 +237,8 @@ def _run_heavy(cmd, text, rid):
     """后台线程执行耗时合成（tts/export），完成后回写结果。"""
     try:
         if cmd == "tts":
-            p = _tts(text)
-            out({"id": rid, "ok": True, "mp3": p})
+            files = _tts(text)
+            out({"id": rid, "ok": True, "files": files})
         elif cmd == "export":
             p = _export_mp3(text)
             out({"id": rid, "ok": True, "file": p})

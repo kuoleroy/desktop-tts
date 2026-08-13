@@ -278,12 +278,89 @@ async function playAudioFrom(blobUrl) {
 }
 window.playAudioFrom = playAudioFrom;
 
+// ---- 长文本分块朗读队列：依次播放多个音频文件，播完自动下一个 ----
+let playQueue = [];
+let playingId = 0;
+
+function playQueueItem(idx) {
+  if (!playQueue[idx]) {
+    // 播完整个队列
+    playQueue = [];
+    broadcastPlayState("idle");
+    return;
+  }
+  playingId++;
+  const myId = playingId;
+  const url = playQueue[idx];
+  const onDone = () => {
+    if (myId !== playingId) return; // 已被停止/替换
+    playQueueItem(idx + 1);
+  };
+  playSequence(url, onDone);
+}
+
+function playSequence(url, onDone) {
+  stopAudio(true); // 停止但不广播 idle（由队列接管）
+  audioCtx = audioCtx || new AudioContext();
+  if (!audioCtx) {
+    onDone();
+    return;
+  }
+  (async () => {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        setStatus("播放失败: " + res.statusText);
+        onDone();
+        return;
+      }
+      const buf = await res.arrayBuffer();
+      const audio = await audioCtx.decodeAudioData(buf);
+      audioSrc = audioCtx.createBufferSource();
+      audioSrc.buffer = audio;
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      audioSrc.connect(analyser);
+      analyser.connect(audioCtx.destination);
+      audioSrc.onended = () => {
+        mouthLevel = 0;
+        if (vrm) vrm.expressionManager?.setValue("aa", 0);
+        onDone();
+      };
+      audioSrc.onerror = () => onDone();
+      audioSrc.start();
+      broadcastPlayState("playing");
+    } catch (e) {
+      setStatus("播放失败: " + e.message);
+      onDone();
+    }
+  })();
+}
+
+// 停止队列（广播 idle）
+function stopQueue() {
+  playingId++;
+  playQueue = [];
+  if (audioSrc) {
+    try { audioSrc.stop(); } catch (_) {}
+    audioSrc.disconnect();
+    audioSrc = null;
+  }
+  broadcastPlayState("idle");
+}
+
+function startQueue(paths) {
+  stopQueue();
+  playQueue = paths.slice();
+  playQueueItem(0);
+}
+
 // 播放状态：playing / paused / idle
 function broadcastPlayState(state) {
   window.__TAURI__?.event?.emit("play-state", state);
 }
 
-function stopAudio() {
+function stopAudio(silent) {
   if (audioSrc) {
     try { audioSrc.stop(); } catch (_) {}
     audioSrc.disconnect();
@@ -292,7 +369,8 @@ function stopAudio() {
   if (audioCtx && audioCtx.state === "suspended") {
     audioCtx.resume().catch(() => {});
   }
-  broadcastPlayState("idle");
+  stopQueue?.();
+  if (!silent) broadcastPlayState("idle");
 }
 window.stopAudio = stopAudio;
 
@@ -398,6 +476,14 @@ whenTauriReady(() => {
   window.__TAURI__.event.listen("tts", (e) => {
     // 路径含反斜杠需归一化为正斜杠，否则 asset 协议 URL 解析失败
     playAudioFrom(window.__TAURI__.core.convertFileSrc(String(e.payload).replace(/\\/g, "/")));
+  });
+  // 分块朗读：多文件路径，排队顺序播放
+  window.__TAURI__.event.listen("tts-multi", (e) => {
+    const paths = Array.isArray(e.payload) ? e.payload : [];
+    const urls = paths.map((p) =>
+      window.__TAURI__.core.convertFileSrc(String(p).replace(/\\/g, "/"))
+    );
+    startQueue(urls);
   });
   window.__TAURI__.event.listen("tts-error", (e) => {
     bubble(String(e.payload || "TTS 失败"), 2600);

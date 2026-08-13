@@ -55,6 +55,9 @@ struct SidecarReply {
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     mp3: Option<String>,
+    /// 分块朗读时的一次合成结果列表（cmd=tts 超长文本）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    files: Option<Vec<String>>,
     /// 导出 MP3 时的绝对路径（cmd=export）
     #[serde(skip_serializing_if = "Option::is_none")]
     file: Option<String>,
@@ -706,6 +709,16 @@ fn main() {
                                 if let Some(main) = app1.get_webview_window("main") {
                                     let path = cache_dir().join(&mp3);
                                     let _ = main.emit("tts", &path.to_string_lossy().to_string());
+                                }
+                            }
+                            // 分块朗读：把多个文件路径依次 emit 给主窗口排队播放
+                            if let Some(files) = reply.files.as_ref() {
+                                if let Some(main) = app1.get_webview_window("main") {
+                                    let paths: Vec<String> = files
+                                        .iter()
+                                        .map(|f| cache_dir().join(f).to_string_lossy().to_string())
+                                        .collect();
+                                    let _ = main.emit("tts-multi", &paths);
                                 }
                             }
                         } else {
