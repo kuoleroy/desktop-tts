@@ -44,7 +44,7 @@
         "title": "Floater",
         "url": "floater.html",
         "width": 200,
-        "height": 96,
+        "height": 132,
         "visible": false,
         "decorations": false,
         "alwaysOnTop": true,

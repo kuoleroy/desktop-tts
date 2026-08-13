@@ -287,6 +287,30 @@ fn toggle_grab(app: tauri::AppHandle, on: bool) {
     grabber_cmd(&app, if on { "arm" } else { "disarm" });
 }
 
+/// 悬浮框「设置」→ 呼出面板作为后台设置界面（切交互态，与双击模型一致）
+#[tauri::command]
+fn show_panel(app: tauri::AppHandle) {
+    let st = app.state::<AppState>();
+    let mut guard = st.0.lock().unwrap();
+    if guard.1 {
+        return; // 面板已在前台，无需重复弹出
+    }
+    if let (Some(main), Some(panel)) = (
+        app.get_webview_window("main"),
+        app.get_webview_window("panel"),
+    ) {
+        if let Ok(pos) = main.outer_position() {
+            let win_size = panel.inner_size().ok().unwrap_or(tauri::PhysicalSize::new(280, 400));
+            let (cx, cy) = clamp_to_work_area(&app, pos.x + 260, pos.y + 20, win_size.width, win_size.height);
+            let _ = panel.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(cx, cy)));
+        }
+        let _ = panel.show();
+    }
+    guard.0 = AppMode::Interact;
+    guard.1 = true;
+    let _ = app.emit("toggle-mode", "interact");
+}
+
 /// 把目标物理位置 (x, y) 夹紧到其所在显示器的工作区内，避免面板落到屏外。
 /// 返回夹紧后的 (x, y)；找不到显示器则原样返回。
 fn clamp_to_work_area(
@@ -310,16 +334,17 @@ fn clamp_to_work_area(
     (cx, cy)
 }
 
-/// 处理全局选区抓取：把面板移到选区旁并填充文本，切到交互态
+/// 处理全局选区抓取：显示悬浮框填充文本，隐藏面板（面板退作后台设置），返回观赏态
 fn handle_grab(app: &tauri::AppHandle, text: &str, x: Option<i32>, y: Option<i32>) {
     log_async(format!("[{}] grab text ({} chars)", std::process::id(), text.chars().count()));
-    // 状态：切到交互态（模型让位）；注意不要设置 st.1，否则 pet-dblclick 无法再把面板调出
+    // 状态：返回观赏模式（面板隐藏、悬浮框前台）；不设置 st.1，保证 pet-dblclick 可再调出面板
     {
         let st = app.state::<AppState>();
         let mut guard = st.0.lock().unwrap();
-        guard.0 = AppMode::Interact;
+        guard.0 = AppMode::Watch;
+        guard.1 = false;
     }
-    // 移动悬浮框到鼠标/选区位置（在鼠标下方一点，避免遮挡），并收敛到屏幕内；panel 作为后台不跟随
+    // 移动悬浮框到鼠标/选区位置（在鼠标下方一点，避免遮挡），并收敛到屏幕内
     if let Some(f) = app.get_webview_window("floater") {
         let win_size = f.inner_size().ok().unwrap_or(tauri::PhysicalSize::new(200, 96));
         if let (Some(px), Some(py)) = (x, y) {
@@ -328,10 +353,14 @@ fn handle_grab(app: &tauri::AppHandle, text: &str, x: Option<i32>, y: Option<i32
         }
         let _ = f.show();
     }
+    // 隐藏面板：悬浮框作为前台快捷操作，面板退作后台设置
+    let _ = app.get_webview_window("panel").and_then(|w| w.hide().ok());
     // 通知悬浮框填充文本
     let _ = app.emit("floater-text", text);
-    // 广播模式切换
-    let _ = app.emit("toggle-mode", "interact");
+    // 同步填充面板文本区（面板隐藏时 WebView 仍在运行，下次显示即可见）
+    let _ = app.emit("grab-text", text);
+    // 广播模式切换（观赏：模型正常显示）
+    let _ = app.emit("toggle-mode", "watch");
 }
 
 fn send_cmd(app: &tauri::AppHandle, cmd: &str, payload: &str) {
@@ -385,6 +414,8 @@ fn stop_read(app: tauri::AppHandle) {
 #[tauri::command]
 fn set_voice(app: tauri::AppHandle, name: String) {
     send_cmd(&app, "voice", &name);
+    // 音色变更联动：悬浮框等前端监听此事件实时刷新显示
+    let _ = app.emit("voice-changed", name);
 }
 
 #[tauri::command]
@@ -600,7 +631,7 @@ fn main() {
         .manage(GrabberState(Mutex::new(None)))
         .manage(AppState(Mutex::new((AppMode::Watch, false))))
         .invoke_handler(tauri::generate_handler![
-            read_text, stop_read, set_voice, set_rate, set_pitch, export_mp3, list_models, model_dir, quit, toggle_grab, get_settings, toggle_click_through, get_click_through
+            read_text, stop_read, set_voice, set_rate, set_pitch, export_mp3, list_models, model_dir, quit, toggle_grab, show_panel, get_settings, toggle_click_through, get_click_through
         ])
         .on_window_event(|window, event| {
             match event {
@@ -806,13 +837,15 @@ log("windows created");
                     log("panel-closing received");
                     let app_state = panel_app_handle.state::<AppState>();
                     let mut st = app_state.0.lock().unwrap();
-                    if st.1 {
-                        let _ = panel_app_handle.get_webview_window("panel").and_then(|w| w.hide().ok());
-                        st.0 = AppMode::Watch;
-                        let _ = panel_app_handle.emit("toggle-mode", "watch");
-                        log("panel-closing: emitted watch");
-                        st.1 = false;
-                    }
+                    // 用户按 Esc / 双击面板 → 无条件隐藏面板与悬浮框。
+                    // 不依赖 st.1：该标志可能因 panel-ready 竞态与面板可见性失配，
+                    // 若在此拦截会导致面板永远无法隐藏。
+                    let _ = panel_app_handle.get_webview_window("panel").and_then(|w| w.hide().ok());
+                    let _ = panel_app_handle.get_webview_window("floater").and_then(|w| w.hide().ok());
+                    st.0 = AppMode::Watch;
+                    st.1 = false;
+                    let _ = panel_app_handle.emit("toggle-mode", "watch");
+                    log("panel-closing: emitted watch");
                 });
             }
 

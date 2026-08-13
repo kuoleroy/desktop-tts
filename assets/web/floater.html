@@ -19,6 +19,11 @@
     gap: 8px;
   }
   #title { font-size: 11px; color: #8a8f9a; text-align: center; letter-spacing: 0.5px; }
+  #voice-line {
+    font-size: 11px; color: #6f7582; text-align: center;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #voice-line b { color: #9aa0ad; font-weight: 600; }
   #actions { display: flex; gap: 8px; }
   .btn {
     flex: 1; padding: 8px 0; border: none; border-radius: 8px;
@@ -35,9 +40,11 @@
 <body>
 <div id="box">
   <div id="title">已选中 · <span id="count">0</span> 字</div>
+  <div id="voice-line">音色：<b id="voice">-</b></div>
   <div id="actions">
     <button id="btn-read" class="btn">朗读</button>
     <button id="btn-copy" class="btn">复制</button>
+    <button id="btn-settings" class="btn">设置</button>
   </div>
 </div>
 <script type="module" src="floater.js"></script>
