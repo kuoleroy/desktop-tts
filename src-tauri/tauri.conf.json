@@ -38,6 +38,20 @@
         "resizable": false,
         "shadow": true,
         "additionalBrowserArgs": "--autoplay-policy=no-user-gesture-required"
+      },
+      {
+        "label": "lockbtn",
+        "title": "Pet Lock",
+        "url": "lock.html",
+        "width": 36,
+        "height": 36,
+        "visible": false,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "transparent": true
       }
     ],
     "security": {

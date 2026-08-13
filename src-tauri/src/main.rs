@@ -10,6 +10,24 @@ use std::thread;
 use tauri::{Emitter, Listener, Manager};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::POINT;
+#[cfg(windows)]
+use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+/// 获取当前鼠标屏幕坐标（Windows）
+#[cfg(windows)]
+fn get_cursor_pos() -> Option<(i32, i32)> {
+    unsafe {
+        let mut p: POINT = std::mem::zeroed();
+        if GetCursorPos(&mut p) != 0 {
+            Some((p.x, p.y))
+        } else {
+            None
+        }
+    }
+}
+
 static REGISTERED_EVENTS: std::sync::LazyLock<Mutex<HashSet<&'static str>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashSet::new()));
 
@@ -47,6 +65,9 @@ struct GrabberState(Mutex<Option<(Child, std::sync::mpsc::Receiver<bool>, mpsc::
 struct AppState(Mutex<(AppMode, bool)>);
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+/// 主窗口穿透状态（true=穿透）。由悬浮锁按钮切换
+static CLICK_THROUGH: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct SidecarReply {
@@ -491,6 +512,26 @@ fn get_settings(app: tauri::AppHandle) -> serde_json::Value {
     }
 }
 
+/// 切换主窗口穿透/可交互（悬浮锁按钮调用）。
+/// 返回切换后的穿透状态（true=穿透）。同时广播给锁窗口更新图标。
+#[tauri::command]
+fn toggle_click_through(app: tauri::AppHandle) -> bool {
+    let cur = CLICK_THROUGH.load(Ordering::Relaxed) != 0;
+    let next = !cur;
+    CLICK_THROUGH.store(next as u64, Ordering::Relaxed);
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.set_ignore_cursor_events(next);
+        log_async(format!("[{}] click-through -> {}", std::process::id(), next));
+    }
+    let _ = app.emit("click-through-changed", next);
+    next
+}
+
+#[tauri::command]
+fn get_click_through() -> bool {
+    CLICK_THROUGH.load(Ordering::Relaxed) != 0
+}
+
 #[tauri::command]
 fn quit(app: tauri::AppHandle) {
     // 关闭 sidecar 与 grabber 子进程，避免残留孤儿 python
@@ -577,7 +618,7 @@ fn main() {
         .manage(GrabberState(Mutex::new(None)))
         .manage(AppState(Mutex::new((AppMode::Watch, false))))
         .invoke_handler(tauri::generate_handler![
-            read_text, stop_read, set_voice, set_rate, set_pitch, export_mp3, list_models, model_dir, quit, toggle_grab, get_settings
+            read_text, stop_read, set_voice, set_rate, set_pitch, export_mp3, list_models, model_dir, quit, toggle_grab, get_settings, toggle_click_through, get_click_through
         ])
         .on_window_event(|window, event| {
             match event {
@@ -608,13 +649,12 @@ fn main() {
             let _ = scope.allow_directory(models_dir(), true);
             let _ = scope.allow_directory(cache_dir(), true);
 
-            // ---- 主窗口：穿透常开（只开一次，永不切换）----
+            // ---- 主窗口：默认穿透（不挡鼠标）；由悬浮锁按钮切换穿透/可交互 ----
             let main_win = app.get_webview_window("main").expect("main window");
             if let Err(e) = main_win.set_ignore_cursor_events(true) {
-                log_error(&app_handle, format!("Failed to set ignore_cursor_events: {}", e));
-                log_error(&app_handle, "Falling back to normal cursor events for main window");
+                log_error(&app_handle, format!("Failed to set_ignore_cursor_events: {}", e));
             } else {
-                log("Main window cursor events disabled successfully");
+                log("Main window click-through (default)");
             }
             log(&format!(
                 "main window visible={} inner={:?} outer={:?} pos={:?}",
@@ -900,6 +940,42 @@ fn main() {
                                     log_error(&app2, format!("watchdog grabber respawn failed: {e}"));
                                 }
                             }
+                        }
+                    }
+                });
+            }
+
+            // ---- 悬浮锁：鼠标悬停在桌宠附近时显示锁按钮，移开隐藏 ----
+            // 主窗口默认穿透，前端收不到 hover，故在 Rust 侧轮询鼠标位置。
+            // 鼠标进入「主窗口矩形 + 外扩 20px」区域 → 显示锁并定位到桌宠右上角。
+            #[cfg(windows)]
+            {
+                let app2 = Arc::clone(&app_handle);
+                thread::spawn(move || {
+                    let mut shown = false;
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        let Some((mx, my)) = get_cursor_pos() else { continue };
+                        let Some(main) = app2.get_webview_window("main") else { continue };
+                        let Ok(pos) = main.outer_position() else { continue };
+                        let Ok(size) = main.outer_size() else { continue };
+                        let pad = 20;
+                        let inside = mx >= pos.x - pad
+                            && mx <= pos.x + size.width as i32 + pad
+                            && my >= pos.y - pad
+                            && my <= pos.y + size.height as i32 + pad;
+                        let Some(lock) = app2.get_webview_window("lockbtn") else { continue };
+                        if inside && !shown {
+                            shown = true;
+                            let _ = lock.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
+                                pos.x + size.width as i32 - 16,
+                                pos.y - 20,
+                            )));
+                            let _ = lock.show();
+                            let _ = lock.set_focus();
+                        } else if !inside && shown {
+                            shown = false;
+                            let _ = lock.hide();
                         }
                     }
                 });
