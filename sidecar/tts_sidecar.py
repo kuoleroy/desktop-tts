@@ -23,6 +23,11 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 CACHE = os.path.join(os.path.dirname(BASE), "tts_cache")
 os.makedirs(CACHE, exist_ok=True)
 
+# edge-tts 单块合成超时（秒）：断网/网络异常时快速放弃，避免 UI 长时间卡住
+EDGE_TIMEOUT = 15
+# edge-tts 失败（断网/超时）时自动回退的本地自然音（离线，Windows 神经语音）
+FALLBACK_LOCAL_VOICE = "Microsoft Xiaoxiao (Natural)"
+
 # ---- 配置持久化：音色/语速/语调存 settings.json，重启不丢 ----
 SETTINGS_FILE = os.path.join(os.path.dirname(BASE), "settings.json")
 DEFAULT_STATE = {"voice": "zh-CN-XiaoxiaoNeural", "rate": 0, "pitch": "medium"}
@@ -107,7 +112,11 @@ def out(obj):
 
 
 def _edge_synth(text, fname):
-    """在后台 loop 上跑 edge-tts；返回文件名或抛异常/InterruptedError。"""
+    """在后台 loop 上跑 edge-tts；返回文件名或抛异常/InterruptedError。
+
+    加了超时上限（EDGE_TIMEOUT 秒/块）：断网/网络异常时 edge-tts 会一直挂着，
+    超时即取消并抛 TimeoutError，由上层快速回退 SAPI，避免 UI 长时间卡住。
+    """
     import edge_tts
 
     rate_s = f"{state['rate'] * 10:+d}%" if state["rate"] else "+0%"
@@ -118,9 +127,15 @@ def _edge_synth(text, fname):
 
     fut = _submit(_save())
     try:
-        fut.result()  # 阻塞当前线程，直至完成或取消
+        fut.result(timeout=EDGE_TIMEOUT)  # 阻塞当前线程，超时即放弃
     except (asyncio.CancelledError, concurrent.futures.CancelledError):
         raise InterruptedError("interrupted by stop")
+    except concurrent.futures.TimeoutError:
+        # 超时：取消后台任务，避免残留，然后回退 SAPI
+        with _future_lock:
+            if _active_future is not None and not _active_future.done():
+                _active_future.cancel()
+        raise RuntimeError("edge-tts timeout (network?)")
     if os.path.getsize(fname) > 0:
         return fname
     raise RuntimeError("edge-tts produced empty file")
@@ -178,13 +193,14 @@ def _synth(text, fname):
             raise InterruptedError("interrupted by stop")
         try:
             with open(os.path.join(BASE, "sidecar_edge.log"), "a", encoding="utf-8") as _f:
-                _f.write(f"[{time.strftime('%H:%M:%S')}] voice={state['voice']} edge FAIL: {cause!r}\n")
+                _f.write(f"[{time.strftime('%H:%M:%S')}] voice={state['voice']} edge FAIL: {cause!r} -> fallback local {FALLBACK_LOCAL_VOICE}\n")
         except Exception:
             pass
+        # 断网/失败：自动切到本地自然音（离线，Windows 神经语音），而非系统默认音
         try:
-            return _sapi_synth(text, fname)
+            return _sapi_synth(text, fname, FALLBACK_LOCAL_VOICE)
         except Exception as e2:
-            raise RuntimeError(f"edge-tts: {cause!r}; sapi: {e2!r}")
+            raise RuntimeError(f"edge-tts: {cause!r}; local sapi: {e2!r}")
 
 
 # edge-tts 单次合成上限（字）。超长文本切成多块，每块独立合成、依次播放
