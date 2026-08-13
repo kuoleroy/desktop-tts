@@ -6,7 +6,7 @@
   "build": {
     "frontendDist": "../assets/web",
     "devUrl": "http://localhost:8877",
-    "beforeDevCommand": "",
+    "beforeDevCommand": "python dev_server.py",
     "beforeBuildCommand": ""
   },
   "app": {
@@ -22,19 +22,35 @@
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "resizable": false,
-        "shadow": false
+        "shadow": false,
+        "additionalBrowserArgs": "--autoplay-policy=no-user-gesture-required"
+      },
+      {
+        "label": "panel",
+        "title": "Pet Panel",
+        "url": "panel.html",
+        "width": 280,
+        "height": 400,
+        "visible": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": true,
+        "additionalBrowserArgs": "--autoplay-policy=no-user-gesture-required"
       }
     ],
     "security": {
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["$CARGO_MANIFEST_DIR/../tts_cache/**", "$CARGO_MANIFEST_DIR/../models/**"]
+        "scope": []
       }
     }
   },
   "bundle": {
-    "active": false,
-    "targets": "all"
+    "active": true,
+    "targets": "nsis",
+    "icon": ["icons/icon.ico"]
   }
 }

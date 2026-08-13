@@ -50,6 +50,9 @@ struct SidecarReply {
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     mp3: Option<String>,
+    /// 导出 MP3 时的绝对路径（cmd=export）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file: Option<String>,
 }
 
 /// dev 模式：从项目目录找 sidecar 脚本；release 模式：exe 旁 sidecar 目录
@@ -73,17 +76,17 @@ fn sidecar_dir() -> std::path::PathBuf {
     sidecar_script().parent().map(|p| p.to_path_buf()).unwrap_or_default()
 }
 
-fn spawn_sidecar(app: Arc<tauri::AppHandle>) -> (Child, std::sync::mpsc::Receiver<bool>, mpsc::Sender<CommandMessage>) {
+fn spawn_sidecar(app: Arc<tauri::AppHandle>) -> Result<(Child, std::sync::mpsc::Receiver<bool>, mpsc::Sender<CommandMessage>), String> {
     let py = std::env::var("PYTHON").unwrap_or_else(|_| "python".into());
     let script = sidecar_script();
-    let mut child = Command::new(py)
+    let mut child = Command::new(&py)
         .arg(&script)
         .current_dir(sidecar_dir())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
-        .expect("sidecar spawn failed");
+        .map_err(|e| format!("sidecar spawn failed (python={py}): {e}"))?;
 
     let (exit_tx, exit_rx) = std::sync::mpsc::channel::<bool>();
     let (cmd_tx, cmd_rx) = mpsc::channel::<CommandMessage>();
@@ -129,19 +132,36 @@ fn spawn_sidecar(app: Arc<tauri::AppHandle>) -> (Child, std::sync::mpsc::Receive
         log_error(&app, "Sidecar stdin unavailable");
     }
 
-    (child, exit_rx, cmd_tx)
+    Ok((child, exit_rx, cmd_tx))
 }
 
 fn send_cmd(app: &tauri::AppHandle, cmd: &str, payload: &str) {
     log_async(format!("[{}] cmd: {} {}", std::process::id(), cmd, payload));
     let app = Arc::new(app.clone());
     let state = app.state::<SidecarState>();
-    let mut guard = state.0.lock().unwrap();
-    if guard.is_none() {
-        let (child, exit_rx, cmd_tx) = spawn_sidecar(Arc::clone(&app));
-        *guard = Some((child, exit_rx, cmd_tx));
-    }
-    if let Some((_child, exit_rx, cmd_tx)) = guard.as_mut() {
+
+    // 若 sidecar 已退出，先清理再重启
+    let cmd_tx_res = {
+        let mut guard = state.0.lock().unwrap();
+        if let Some((_child, exit_rx, _tx)) = guard.as_ref() {
+            if exit_rx.try_recv() == Ok(true) {
+                *guard = None;
+            }
+        }
+        if guard.is_none() {
+            match spawn_sidecar(Arc::clone(&app)) {
+                Ok(s) => { *guard = Some(s); }
+                Err(e) => {
+                    log_error(&app, format!("{e}"));
+                    let _ = app.emit("tts-error", format!("朗读服务启动失败：{e}"));
+                    return;
+                }
+            }
+        }
+        guard.as_ref().map(|(_c, _e, tx)| tx.clone())
+    };
+
+    if let Some(cmd_tx) = cmd_tx_res {
         let msg = CommandMessage {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             cmd: cmd.to_string(),
@@ -149,13 +169,6 @@ fn send_cmd(app: &tauri::AppHandle, cmd: &str, payload: &str) {
         };
         if let Err(e) = cmd_tx.send(msg) {
             log_error(&app, format!("Failed to send command: {}", e));
-        }
-        if let Ok(exited) = exit_rx.try_recv() {
-            if exited {
-                log_error(&app, "Sidecar process exited, restarting...");
-                let (new_child, new_rx, new_tx) = spawn_sidecar(Arc::clone(&app));
-                *guard = Some((new_child, new_rx, new_tx));
-            }
         }
     }
 }
@@ -185,11 +198,15 @@ fn set_pitch(app: tauri::AppHandle, pitch: String) {
     send_cmd(&app, "pitch", &pitch);
 }
 
+/// 导出 MP3：sidecar 合成后写入用户 Downloads，产物路径通过 export-done 事件返回
+#[tauri::command]
+fn export_mp3(app: tauri::AppHandle, text: String) {
+    send_cmd(&app, "export", &text);
+}
+
 #[tauri::command]
 fn list_models() -> Vec<String> {
-    let models = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("models");
+    let models = models_dir();
     std::fs::read_dir(&models)
         .map(|rd| {
             rd.filter_map(|e| e.ok())
@@ -206,36 +223,89 @@ fn list_models() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// 返回模型存放目录（根目录 models/），供前端构造 asset URL
-#[tauri::command]
-fn model_dir() -> String {
+/// 返回模型存放目录（根目录 models/，规范化路径以消除 `..`），供前端构造 asset URL
+fn models_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("models")
-        .to_string_lossy()
-        .to_string()
+        .canonicalize()
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("models")
+        })
+}
+
+/// 返回 TTS 音频缓存目录（规范化路径以消除 `..`，供 asset 协议访问）
+fn cache_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("tts_cache")
+        .canonicalize()
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("tts_cache")
+        })
+}
+
+#[tauri::command]
+fn model_dir() -> String {
+    models_dir().to_string_lossy().to_string()
 }
 
 #[tauri::command]
 fn quit(app: tauri::AppHandle) {
+    // 关闭 sidecar 子进程，避免残留孤儿 python
+    let state = app.state::<SidecarState>();
+    let mut guard = state.0.lock().unwrap();
+    if let Some((child, _, _)) = guard.as_mut() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    *guard = None;
     app.exit(0);
 }
 
 fn main() {
+    // ---- 崩溃捕获：panic 时同步写入 diag.log（防 abort 前丢日志）----
+    {
+        let log_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("diag.log");
+        std::panic::set_hook(Box::new(move |info| {
+            use std::io::Write;
+            let msg = format!("[{}] PANIC: {}", std::process::id(), info);
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+                let _ = writeln!(f, "{}", msg);
+                let _ = writeln!(f, "{}", std::backtrace::Backtrace::force_capture());
+            }
+            eprintln!("{}", msg);
+        }));
+    }
+
     // ---- 初始化异步日志（单例，启动一次）----
     let (log_tx, log_rx) = mpsc::channel();
     let _ = LOG_TX.set(log_tx);
     let log_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("diag.log");
     thread::spawn(move || {
+        use std::sync::mpsc::RecvTimeoutError;
         let mut buffer: Vec<String> = Vec::new();
         let mut last_write = std::time::Instant::now();
         const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
         const FLUSH_LEN: usize = 50;
 
-        while let Ok(msg) = log_rx.recv() {
-            buffer.push(msg);
+        // 用 recv_timeout 周期性唤醒，避免应用空闲时日志永远不落盘
+        loop {
+            let got = match log_rx.recv_timeout(std::time::Duration::from_millis(500)) {
+                Ok(msg) => {
+                    buffer.push(msg);
+                    true
+                }
+                Err(RecvTimeoutError::Timeout) => false,
+                Err(RecvTimeoutError::Disconnected) => break,
+            };
             let now = std::time::Instant::now();
-            if now.duration_since(last_write) > FLUSH_INTERVAL || buffer.len() >= FLUSH_LEN {
+            let due = now.duration_since(last_write) >= FLUSH_INTERVAL;
+            if (got && (due || buffer.len() >= FLUSH_LEN)) || (!got && due && !buffer.is_empty()) {
                 if let Ok(mut f) = std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
@@ -258,8 +328,22 @@ fn main() {
         .manage(SidecarState(Mutex::new(None)))
         .manage(AppState(Mutex::new((AppMode::Watch, false))))
         .invoke_handler(tauri::generate_handler![
-            read_text, stop_read, set_voice, set_rate, set_pitch, list_models, model_dir, quit
+            read_text, stop_read, set_voice, set_rate, set_pitch, export_mp3, list_models, model_dir, quit
         ])
+        .on_window_event(|window, event| {
+            match event {
+                tauri::WindowEvent::CloseRequested { .. } => {
+                    log_async(format!("[{}] window close-requested: {}", std::process::id(), window.label()));
+                }
+                tauri::WindowEvent::Destroyed => {
+                    log_async(format!("[{}] window destroyed: {}", std::process::id(), window.label()));
+                }
+                tauri::WindowEvent::Focused(focused) => {
+                    log_async(format!("[{}] window focused={} : {}", std::process::id(), focused, window.label()));
+                }
+                _ => {}
+            }
+        })
         .setup(|app| {
             use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 
@@ -270,6 +354,11 @@ fn main() {
 
             let app_handle = Arc::new(app.handle().clone());
 
+            // ---- 动态放行 asset 协议目录（config 中 $CARGO_MANIFEST_DIR 非有效变量，需运行时添加）----
+            let scope = app.asset_protocol_scope();
+            let _ = scope.allow_directory(models_dir(), true);
+            let _ = scope.allow_directory(cache_dir(), true);
+
             // ---- 主窗口：穿透常开（只开一次，永不切换）----
             let main_win = app.get_webview_window("main").expect("main window");
             if let Err(e) = main_win.set_ignore_cursor_events(true) {
@@ -278,21 +367,52 @@ fn main() {
             } else {
                 log("Main window cursor events disabled successfully");
             }
+            log(&format!(
+                "main window visible={} inner={:?} outer={:?} pos={:?}",
+                main_win.is_visible().unwrap_or(false),
+                main_win.inner_size().ok(),
+                main_win.outer_size().ok(),
+                main_win.outer_position().ok()
+            ));
 
-            // ---- 面板窗口：交互模式载体，可点击（不透明，否则 rgba 透明区穿透）----
-            let _panel_win = tauri::WebviewWindowBuilder::new(
-                app,
-                "panel",
-                tauri::WebviewUrl::App("panel.html".into()),
-            )
-                .inner_size(280.0, 400.0)
-                .resizable(false)
-                .decorations(false)
-                .always_on_top(true)
-                .skip_taskbar(true)
-                .shadow(true)
-                .visible(false)
-                .build()?;
+            // ---- 延迟复查：3 秒后再次读取主窗口状态，判断是时序问题还是创建失败 ----
+            {
+                let probe_app = Arc::clone(&app_handle);
+                thread::spawn(move || {
+                    thread::sleep(std::time::Duration::from_secs(3));
+                    let win = probe_app.get_webview_window("main");
+                    match win {
+                        Some(w) => log_async(format!(
+                            "[probe+3s] main visible={} inner={:?} outer={:?} pos={:?}",
+                            w.is_visible().unwrap_or(false),
+                            w.inner_size().ok(),
+                            w.outer_size().ok(),
+                            w.outer_position().ok()
+                        )),
+                        None => log_async("[probe+3s] main window NOT FOUND".into()),
+                    }
+                    let p = probe_app.get_webview_window("panel");
+                    match p {
+                        Some(w) => log_async(format!(
+                            "[probe+3s] panel visible={} inner={:?}",
+                            w.is_visible().unwrap_or(false),
+                            w.inner_size().ok()
+                        )),
+                        None => log_async("[probe+3s] panel window NOT FOUND".into()),
+                    }
+                });
+            }
+
+            // ---- 面板窗口：交互模式载体，可点击 ----
+            // 面板在 tauri.conf.json 中声明（与主窗口一致，由 Tauri 核心在 setup 前创建），
+            // 这里仅取引用并记录初始化状态。实验证明：在 setup() 内程序化创建的第二个
+            // WebView 窗口不会被初始化（inner=None 且页面不加载），而 config 声明的窗口正常。
+            let _panel_win = app.get_webview_window("panel").expect("panel window");
+            log(&format!(
+                "panel init: visible={} inner={:?}",
+                _panel_win.is_visible().unwrap_or(false),
+                _panel_win.inner_size().ok()
+            ));
 
             log("windows created");
             log(&format!("AppHandle cloned, Arc count: {}", Arc::strong_count(&app_handle)));
@@ -319,6 +439,24 @@ fn main() {
                     }
                     let _ = panel.show();
                     let _ = panel.set_focus();
+                    log(&format!(
+                        "after panel.show(): visible={} inner={:?}",
+                        panel.is_visible().unwrap_or(false),
+                        panel.inner_size().ok()
+                    ));
+                    {
+                        let pa = app.clone();
+                        thread::spawn(move || {
+                            thread::sleep(std::time::Duration::from_millis(1500));
+                            if let Some(p) = pa.get_webview_window("panel") {
+                                log_async(format!(
+                                    "[panel+1.5s] visible={} inner={:?}",
+                                    p.is_visible().unwrap_or(false),
+                                    p.inner_size().ok()
+                                ));
+                            }
+                        });
+                    }
                     st.0 = AppMode::Interact;
                     st.1 = true;
                     let _ = app.emit("toggle-mode", "interact");
@@ -334,12 +472,15 @@ fn main() {
                 app.listen_any(LISTENER_SIDECAR_REPLY, move |ev| {
                     if let Ok(reply) = serde_json::from_str::<SidecarReply>(&ev.payload()) {
                         if reply.ok {
+                            // 导出 MP3：把绝对路径广播给面板
+                            if let Some(file) = reply.file {
+                                let _ = app1.emit("export-done", &file);
+                                log_async(format!("[{}] export done: {}", std::process::id(), file));
+                                return;
+                            }
                             if let Some(mp3) = reply.mp3 {
                                 if let Some(main) = app1.get_webview_window("main") {
-                                    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                                        .join("..")
-                                        .join("tts_cache")
-                                        .join(&mp3);
+                                    let path = cache_dir().join(&mp3);
                                     let _ = main.emit("tts", &path.to_string_lossy().to_string());
                                 }
                             }
@@ -372,7 +513,7 @@ fn main() {
                 });
             }
 
-            // ---- 面板就绪：若已可见则补发一次状态（对齐首次加载，不猜状态） ----
+            // ---- 面板就绪：WebView2 已初始化 → 默认启动即弹出面板（定位到主窗口右侧）----
             static LISTENER_PANEL_READY: &str = "panel-ready";
             if !REGISTERED_EVENTS.lock().unwrap().contains(LISTENER_PANEL_READY) {
                 REGISTERED_EVENTS.lock().unwrap().insert(LISTENER_PANEL_READY);
@@ -380,10 +521,23 @@ fn main() {
                 app.listen_any(LISTENER_PANEL_READY, move |_| {
                     log("panel-ready received");
                     let app_state = panel_ready_app_handle.state::<AppState>();
-                    let st = app_state.0.lock().unwrap();
-                    if st.1 {
+                    let mut st = app_state.0.lock().unwrap();
+                    if !st.1 {
+                        // 默认启动即弹出：面板靠主窗口右侧显示，切到交互态
+                        if let Some(main) = panel_ready_app_handle.get_webview_window("main") {
+                            if let Ok(pos) = main.outer_position() {
+                                let _ = panel_ready_app_handle
+                                    .get_webview_window("panel")
+                                    .map(|p| p.set_position(tauri::Position::Physical(
+                                        tauri::PhysicalPosition::new(pos.x + 260, pos.y + 20),
+                                    )));
+                            }
+                        }
+                        let _ = panel_ready_app_handle.get_webview_window("panel").and_then(|p| p.show().ok());
+                        st.0 = AppMode::Interact;
+                        st.1 = true;
                         let _ = panel_ready_app_handle.emit("toggle-mode", "interact");
-                        log("panel-ready: panel visible, re-emit interact");
+                        log("panel-ready: default show panel (interact)");
                     }
                 });
             }

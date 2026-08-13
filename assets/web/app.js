@@ -101,14 +101,33 @@ async function loadVRM(url) {
 }
 
 async function modelUrl(name) {
-  // Tauri 下用 asset 协议从根目录 models/ 加载；dev(8877) 下走相对 models/
-  if (window.__TAURI__?.core?.convertFileSrc) {
+  // Tauri 下用 asset 协议从根目录 models/ 加载；dev(8877)/浏览器 下走相对 models/
+  // 注意：__TAURI__ 注入晚于顶层脚本，必须先等就绪，否则会误走浏览器相对路径
+  const isTauri = await tauriReady();
+  if (isTauri && window.__TAURI__?.core?.convertFileSrc) {
     const dir = await call("modelDir");
     return window.__TAURI__.core.convertFileSrc(
       dir.replace(/\\/g, "/") + "/" + name
     );
   }
   return "models/" + name;
+}
+
+// 等待 Tauri IPC 注入完成；浏览器/超时则返回 false
+function tauriReady(timeout = 3000) {
+  return new Promise((resolve) => {
+    if (window.__TAURI__?.core) return resolve(true);
+    const t = setInterval(() => {
+      if (window.__TAURI__?.core) {
+        clearInterval(t);
+        resolve(true);
+      }
+    }, 50);
+    setTimeout(() => {
+      clearInterval(t);
+      resolve(false);
+    }, timeout);
+  });
 }
 
 async function loadModelByIndex(i) {
@@ -347,10 +366,17 @@ whenTauriReady(() => {
     setMode(e.payload);
   });
   window.__TAURI__.event.listen("tts", (e) => {
-    playAudioFrom(window.__TAURI__.core.convertFileSrc(String(e.payload)));
+    // 路径含反斜杠需归一化为正斜杠，否则 asset 协议 URL 解析失败
+    playAudioFrom(window.__TAURI__.core.convertFileSrc(String(e.payload).replace(/\\/g, "/")));
   });
   window.__TAURI__.event.listen("tts-error", (e) => {
     bubble(String(e.payload || "TTS 失败"), 2600);
+  });
+  // 面板「停止」→ 真实停止本窗口音频
+  window.__TAURI__.event.listen("stop-audio", () => {
+    stopAudio();
+    if (vrm) vrm.expressionManager?.setValue("aa", 0);
+    bubble("已停止朗读", 1600);
   });
 });
 
