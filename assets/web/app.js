@@ -716,7 +716,9 @@ whenTauriReady(() => {
   menu?.querySelectorAll(".menu-item").forEach((item) => {
     item.addEventListener("click", async () => {
       const a = item.dataset.action;
-      if (a === "reset-size") {
+      if (a === "show-panel") {
+        try { window.__TAURI__.event.emit("pet-dblclick"); } catch (_) {}
+      } else if (a === "reset-size") {
         try {
           const win = window.__TAURI__.window.getCurrentWindow();
           const W = window.__TAURI__.window;
@@ -729,15 +731,6 @@ whenTauriReady(() => {
       }
       menu.classList.add("hidden");
     });
-  });
-  // 右下角缩放手柄 → 系统 resize 拖拽
-  document.getElementById("resize-handle")?.addEventListener("mousedown", (e) => {
-    e.preventDefault();
-    try {
-      window.__TAURI__.window.getCurrentWindow().startResizeDrag(
-        window.__TAURI__.window.WindowResizeEdge.BottomRight
-      );
-    } catch (_) {}
   });
   // 滚轮缩放视角（模型放大缩小）
   document.addEventListener("wheel", (e) => {

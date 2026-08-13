@@ -55,7 +55,8 @@ html, body {
   cursor: pointer;
 }
 #p-back:hover { background: #f0f2f5; }
-.panel-body { padding: 10px; overflow-y: auto; }
+.panel-body { padding: 10px; overflow-y: auto; scrollbar-width: none; -ms-overflow-style: none; }
+.panel-body::-webkit-scrollbar { display: none; }
 #ptext {
   width: 100%;
   min-height: 60px;
@@ -65,7 +66,8 @@ html, body {
   font-size: 12px;
   font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
   color: #333;
-  resize: vertical;
+  resize: none;
+  overflow: hidden;
   outline: none;
   user-select: text;
   -webkit-user-select: text;
@@ -147,11 +149,6 @@ html, body {
 </head>
 <body>
 <div id="panel">
-  <div class="panel-head">
-    <span>桌宠控制台</span>
-    <!-- <span id="panel-hint" style="font-size:11px;font-weight:400;color:#999;"></span> -->
-    <button id="p-back">返回观赏</button>
-  </div>
   <div class="panel-body">
     <div class="panel-row">
       <textarea id="ptext" rows="4" placeholder="输入要朗读 / 导出的文本...">你好，我是桌面小精灵。选中文字，我就能帮你朗读出来。</textarea>

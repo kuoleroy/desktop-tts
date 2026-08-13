@@ -29,6 +29,10 @@ const TTS = {
     if (!window.__TAURI__?.core) return Promise.resolve(null);
     return window.__TAURI__.core.invoke("get_settings");
   },
+  quit() {
+    if (!window.__TAURI__?.core) return Promise.resolve();
+    return window.__TAURI__.core.invoke("quit");
+  },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -77,58 +81,41 @@ function whenTauriReady(cb) {
   setTimeout(() => clearInterval(t), 5000);
 }
 
-// 返回观赏 / 退出：绑定到顶层，真实 Tauri 走事件/命令；纯浏览器预览走兜底
-$("p-back").addEventListener("click", () => {
-  if (window.__TAURI__?.event) {
-    // 真实应用：通知 Rust 关闭面板并切回观赏模式
-    window.__TAURI__.event.emit("panel-closing", {});
-  } else {
-    // 浏览器预览：无 Tauri 运行时，导航回主视图模拟"返回观赏"
-    window.location.href = "index.html";
-  }
-});
-$("p-quit").addEventListener("click", () => {
-  if (window.__TAURI__?.core) window.__TAURI__.core.invoke("quit");
-});
-
 whenTauriReady(() => {
-  // 面板标题栏：位移判拖拽 + 双击返回模型（不靠时间猜，避免和拖拽冲突）
-  const head = document.querySelector(".panel-head");
-  if (head) {
-    const DRAG_THRESHOLD = 5; // 超过 5px 位移才视为拖动
-    let press = null;          // {x, y, moved, dragging}
-    let lastClick = 0;
-    let clickTimer = null;
+  // 抓取默认开启（启动即 arm，全局选中即弹悬浮框）→ 按钮初始显示蓝色
+  setActive("p-grab", true);
 
-    head.addEventListener("mousedown", (e) => {
-      if (e.target.closest("button")) return;
-      press = { x: e.clientX, y: e.clientY, moved: false, dragging: false };
+  // 整个面板可拖动 + 双击隐藏回模型
+  const panelEl = $("panel");
+  if (panelEl) {
+    const DRAG_THRESHOLD = 15;
+    let press = null;
+    let lastClick = 0, clickTimer = null;
+    const isInteractive = (el) => el.closest("button, textarea, select, input, a, .prog, .toggle, label");
+    panelEl.addEventListener("mousedown", (e) => {
+      if (e.button !== 0 || isInteractive(e.target)) return;
+      press = { x: e.clientX, y: e.clientY, moved: false };
     });
-    // 移动监听放 body，避免 mousedown 后鼠标移出 head 丢失
     document.addEventListener("mousemove", (e) => {
-      if (!press || press.dragging) return;
-      const dx = e.clientX - press.x;
-      const dy = e.clientY - press.y;
-      if (!press.moved && Math.hypot(dx, dy) > DRAG_THRESHOLD) {
+      if (!press) return;
+      // 若产生了文本选区（正在拖选文字/复制），不触发面板拖动
+      const sel = window.getSelection();
+      const hasSelection = sel && sel.toString().length > 0;
+      if (hasSelection) { press = null; return; }
+      if (!press.moved && Math.hypot(e.clientX - press.x, e.clientY - press.y) > DRAG_THRESHOLD) {
         press.moved = true;
       }
       if (press.moved) {
-        press.dragging = true;
-        press = null; // 已交给原生拖拽
-        try {
-          window.__TAURI__.window.getCurrentWindow().startDragging();
-        } catch (err) {
-          showHint("拖动失败：" + (err && err.message || err), true);
-        }
+        press = null;
+        try { window.__TAURI__.window.getCurrentWindow().startDragging(); } catch (_) {}
       }
     });
-    document.addEventListener("mouseup", () => {
+    document.addEventListener("mouseup", (e) => {
       if (press && !press.moved) {
-        // 未移动 = 一次点击（用于双击判定）
         const now = Date.now();
         if (lastClick && now - lastClick <= 320) {
           lastClick = 0;
-          if (window.__TAURI__?.event) window.__TAURI__.event.emit("panel-closing", {});
+          window.__TAURI__.event.emit("panel-closing", {});
         } else {
           lastClick = now;
           clearTimeout(clickTimer);
@@ -136,6 +123,10 @@ whenTauriReady(() => {
         }
       }
       press = null;
+    });
+    // Ctrl 组合（如 Ctrl+C 复制）时不触发面板拖动
+    document.addEventListener("keydown", (e) => {
+      if (e.ctrlKey || e.metaKey) press = null;
     });
   }
 
@@ -169,8 +160,8 @@ whenTauriReady(() => {
     setPauseLabel(s === "paused" ? "开始" : "暂停");
     if (s === "idle") {
       setActive("p-export", false);
-      setActive("p-grab", false);
       setPauseLabel("暂停");
+      // 注意：不重置 p-grab —— 抓取是独立开关（启动即 arm），与播放状态无关
     }
   });
 
@@ -193,6 +184,11 @@ whenTauriReady(() => {
 
   // 进入面板时广播就绪（Rust 侧可据此补发状态）
   window.__TAURI__.event.emit("panel-ready", {});
+
+  // Esc 关闭面板
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") window.__TAURI__.event.emit("panel-closing", {});
+  });
 
   // 启动时读取持久化配置并同步下拉框（音色/语速/语调）
   TTS.getSettings().then((s) => {
@@ -233,9 +229,9 @@ $("p-stop").addEventListener("click", () => {
   }
   setActive("p-read", false);
   setActive("p-export", false);
-  setActive("p-grab", false);
   setActive("p-pause", false);
   setPauseLabel("暂停");
+  // 注意：不重置 p-grab —— 抓取是独立开关（启动即 arm），停止朗读不关闭抓取
   showHint("已停止");
 });
 
@@ -249,8 +245,8 @@ $("p-export").addEventListener("click", () => {
   });
 });
 
-// 抓取开关：开启后持续监控鼠标选区，选中文字即移动面板并填充文本；再次点击关闭
-let grabActive = false;
+// 抓取开关：默认开启（启动即 arm，全局选中即弹悬浮框）；点击切换关闭/开启
+let grabActive = true;
 $("p-grab").addEventListener("click", async () => {
   try {
     if (window.__TAURI__?.core) {
@@ -278,3 +274,9 @@ $("p-grab").addEventListener("click", async () => {
 $("sel-voice").addEventListener("change", (e) => TTS.voice(e.target.value));
 $("sel-rate").addEventListener("change", (e) => TTS.rate(parseInt(e.target.value, 10)));
 $("sel-pitch").addEventListener("change", (e) => TTS.pitch(e.target.value));
+
+// 退出：调用 Rust 关闭 sidecar 子进程并退出应用
+$("p-quit").addEventListener("click", () => {
+  showHint("正在退出...");
+  TTS.quit().catch((e) => showHint("退出失败：" + e.message, true));
+});

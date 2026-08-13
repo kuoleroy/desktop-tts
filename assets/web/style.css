@@ -18,7 +18,7 @@ html, body {
   display: block;
   transition: opacity 0.25s ease;
 }
-#stage.model-hidden { opacity: 0; pointer-events: none; }
+#stage.model-hidden { pointer-events: none; }
 
 #bubble {
   position: absolute;
@@ -176,23 +176,7 @@ html, body {
 }
 .model-entry:hover { background: #f0f2f5; }
 .model-entry.active { background: #e6f0ff; color: #1677ff; }
-/* ÓÒÏÂ½ÇËõ·ÅÊÖ±ú */
-#resize-handle {
-  position: fixed;
-  right: 0;
-  bottom: 0;
-  width: 22px;
-  height: 22px;
-  cursor: nwse-resize;
-  opacity: 0;
-  z-index: 50;
-  transition: opacity 0.15s;
-  background: linear-gradient(135deg, transparent 50%, rgba(120,120,140,0.55) 50%);
-  border-bottom-right-radius: 4px;
-}
-#resize-handle:hover { opacity: 1; }
-
-/* ÓÒ¼ü²Ëµ¥ */
+/* ï¿½Ò¼ï¿½ï¿½Ëµï¿½ */
 #pet-menu {
   position: fixed;
   z-index: 60;

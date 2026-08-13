@@ -313,24 +313,23 @@ fn clamp_to_work_area(
 /// 处理全局选区抓取：把面板移到选区旁并填充文本，切到交互态
 fn handle_grab(app: &tauri::AppHandle, text: &str, x: Option<i32>, y: Option<i32>) {
     log_async(format!("[{}] grab text ({} chars)", std::process::id(), text.chars().count()));
-    // 状态：切到交互态
+    // 状态：切到交互态（模型让位）；注意不要设置 st.1，否则 pet-dblclick 无法再把面板调出
     {
         let st = app.state::<AppState>();
         let mut guard = st.0.lock().unwrap();
         guard.0 = AppMode::Interact;
-        guard.1 = true;
     }
-    // 移动面板到鼠标/选区位置（在鼠标下方一点，避免遮挡），并收敛到屏幕内
-    if let Some(p) = app.get_webview_window("panel") {
-        let _ = p.show();
-        let win_size = p.inner_size().ok().unwrap_or(tauri::PhysicalSize::new(280, 400));
+    // 移动悬浮框到鼠标/选区位置（在鼠标下方一点，避免遮挡），并收敛到屏幕内；panel 作为后台不跟随
+    if let Some(f) = app.get_webview_window("floater") {
+        let win_size = f.inner_size().ok().unwrap_or(tauri::PhysicalSize::new(200, 96));
         if let (Some(px), Some(py)) = (x, y) {
-            let (cx, cy) = clamp_to_work_area(app, px + 12, py + 16, win_size.width, win_size.height);
-            let _ = p.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(cx, cy)));
+            let (cx, cy) = clamp_to_work_area(app, px + 8, py + 12, win_size.width, win_size.height);
+            let _ = f.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(cx, cy)));
         }
+        let _ = f.show();
     }
-    // 通知前端填充文本
-    let _ = app.emit("grab-text", text);
+    // 通知悬浮框填充文本
+    let _ = app.emit("floater-text", text);
     // 广播模式切换
     let _ = app.emit("toggle-mode", "interact");
 }
@@ -906,7 +905,11 @@ log("windows created");
                 let mut guard = state.0.lock().unwrap();
                 if guard.is_none() {
                     match spawn_grabber(Arc::clone(&app_handle)) {
-                        Ok(s) => *guard = Some(s),
+                        Ok(s) => {
+                            // 启动即武装：全局任意位置选中文字即触发抓取（弹出悬浮框）
+                            let _ = s.2.send(CommandMessage { id: 0, cmd: "arm".into(), payload: String::new() });
+                            *guard = Some(s);
+                        }
                         Err(e) => {
                             log_error(&app_handle, format!("grabber spawn failed: {e}"));
                         }
@@ -965,8 +968,10 @@ log("windows created");
                             }
                             match spawn_grabber(Arc::clone(&app2)) {
                                 Ok(s) => {
+                                    // 重启后保持武装：全局选中即弹悬浮框不中断
+                                    let _ = s.2.send(CommandMessage { id: 0, cmd: "arm".into(), payload: String::new() });
                                     *guard = Some(s);
-                                    log_async(format!("[{}] watchdog respawned grabber", std::process::id()));
+                                    log_async(format!("[{}] watchdog respawned grabber (re-armed)", std::process::id()));
                                 }
                                 Err(e) => {
                                     log_error(&app2, format!("watchdog grabber respawn failed: {e}"));
