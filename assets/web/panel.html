@@ -119,6 +119,30 @@ html, body {
   padding: 8px 10px;
   border-top: 1px solid #eee;
 }
+#hist-list { max-height: 120px; overflow-y: auto; }
+.hist-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 2px;
+  border-bottom: 1px solid #f5f5f5;
+  font-size: 12px;
+}
+.hist-item:last-child { border-bottom: none; }
+.hist-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  color: #333;
+}
+.hist-text:hover { color: #1677ff; }
+.hist-star { cursor: pointer; color: #bbb; font-size: 13px; }
+.hist-star.on { color: #faad14; }
+.hist-del { cursor: pointer; color: #999; font-size: 12px; }
+.hist-del:hover { color: #ff4d4f; }
+.hist-empty { color: #bbb; font-size: 12px; padding: 4px 2px; }
 </style>
 </head>
 <body>
@@ -140,6 +164,10 @@ html, body {
     <div class="panel-row">
       <button class="p-btn" id="p-export">导出 MP3</button>
       <button class="p-btn toggle" id="p-grab">抓取</button>
+    </div>
+    <div class="panel-section" id="hist-section">
+      <label>朗读历史 / 收藏 <span id="hist-clear" style="cursor:pointer;color:#999;font-weight:400;">清空</span></label>
+      <div id="hist-list"></div>
     </div>
     <div class="panel-section">
       <label>音色 <select id="sel-voice">
