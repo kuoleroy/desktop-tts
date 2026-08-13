@@ -98,8 +98,12 @@ def _edge_synth(text, fname):
     raise RuntimeError("edge-tts produced empty file")
 
 
-def _sapi_synth(text, fname):
-    """SAPI 兜底（同步，较快；未实现打断）。"""
+def _sapi_synth(text, fname, voice_name=None):
+    """SAPI 合成（同步，较快；未实现打断）。
+
+    voice_name：可选，形如 "Microsoft Xiaoxiao (Natural)"，会从系统已安装语音里
+    模糊匹配（忽略大小写、括号差异）；缺省用系统默认语音。
+    """
     import win32com.client
 
     wav = os.path.splitext(fname)[0] + ".wav"
@@ -110,13 +114,32 @@ def _sapi_synth(text, fname):
     voice.AudioOutputStream = stream
     voice.Rate = int(state["rate"] * 5)
     try:
+        if voice_name:
+            want = voice_name.lower().replace("(", "").replace(")", "")
+            for v in voice.GetVoices():
+                desc = v.GetDescription().lower().replace("(", "").replace(")", "")
+                if want and (want in desc or desc in want):
+                    voice.Voice = v
+                    break
         voice.Speak(text)
     finally:
         stream.Close()
     return wav
 
 
+def _is_local_voice(v):
+    """本地音色：以 'local:' 前缀标识（面板传来的 value 形如 'local:Microsoft Xiaoxiao (Natural)'）。"""
+    return isinstance(v, str) and v.startswith("local:")
+
+
 def _synth(text, fname):
+    if _is_local_voice(state["voice"]):
+        # 本地自然音色：直接走 SAPI 指定语音，不经过 edge（离线、无网络依赖）
+        try:
+            return _sapi_synth(text, fname, state["voice"][len("local:"):])
+        except Exception as e2:
+            raise RuntimeError(f"local sapi synth failed: {e2!r}")
+
     try:
         return _edge_synth(text, fname)
     except InterruptedError:
