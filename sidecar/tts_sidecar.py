@@ -23,7 +23,35 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 CACHE = os.path.join(os.path.dirname(BASE), "tts_cache")
 os.makedirs(CACHE, exist_ok=True)
 
-state = {"voice": "zh-CN-XiaoxiaoNeural", "rate": 0, "pitch": "medium"}
+# ---- 配置持久化：音色/语速/语调存 settings.json，重启不丢 ----
+SETTINGS_FILE = os.path.join(os.path.dirname(BASE), "settings.json")
+DEFAULT_STATE = {"voice": "zh-CN-XiaoxiaoNeural", "rate": 0, "pitch": "medium"}
+state = dict(DEFAULT_STATE)
+
+
+def _load_settings():
+    global state
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            state = dict(DEFAULT_STATE)
+            for k in ("voice", "rate", "pitch"):
+                if k in data and isinstance(data[k], (str, int, float)):
+                    state[k] = data[k]
+    except Exception:
+        pass
+
+
+def _save_settings():
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+_load_settings()
 
 # ---- 后台 asyncio 事件循环（edge-tts 跑在这里，便于取消）----
 _loop = None
@@ -189,12 +217,18 @@ def _run_heavy(cmd, text, rid):
 
 def handle(cmd, text, rid):
     # 轻量命令：主线程直接处理，立即响应
+    if cmd == "settings":
+        out({"id": rid, "ok": True, "settings": {
+            "voice": state["voice"], "rate": state["rate"], "pitch": state["pitch"],
+        }})
+        return
     if cmd == "stop":
         _cancel_active()
         out({"id": rid, "ok": True})
         return
     if cmd == "voice":
         state["voice"] = text
+        _save_settings()
         out({"id": rid, "ok": True})
         return
     if cmd == "rate":
@@ -202,10 +236,12 @@ def handle(cmd, text, rid):
             state["rate"] = int(text)
         except ValueError:
             pass
+        _save_settings()
         out({"id": rid, "ok": True})
         return
     if cmd == "pitch":
         state["pitch"] = text
+        _save_settings()
         out({"id": rid, "ok": True})
         return
 

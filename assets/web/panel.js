@@ -25,6 +25,10 @@ const TTS = {
     if (!window.__TAURI__?.core) return Promise.reject(new Error("预览模式无 TTS 运行时"));
     return window.__TAURI__.core.invoke("export_mp3", { text });
   },
+  getSettings() {
+    if (!window.__TAURI__?.core) return Promise.resolve(null);
+    return window.__TAURI__.core.invoke("get_settings");
+  },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -139,6 +143,14 @@ whenTauriReady(() => {
 
   // 进入面板时广播就绪（Rust 侧可据此补发状态）
   window.__TAURI__.event.emit("panel-ready", {});
+
+  // 启动时读取持久化配置并同步下拉框（音色/语速/语调）
+  TTS.getSettings().then((s) => {
+    if (!s) return;
+    if (s.voice && $("sel-voice")) $("sel-voice").value = s.voice;
+    if (s.rate != null && $("sel-rate")) $("sel-rate").value = String(s.rate);
+    if (s.pitch && $("sel-pitch")) $("sel-pitch").value = s.pitch;
+  });
 });
 
 // 朗读：读文本区内容（空则用默认句），播放中按钮变蓝

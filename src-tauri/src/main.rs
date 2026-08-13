@@ -15,6 +15,10 @@ static REGISTERED_EVENTS: std::sync::LazyLock<Mutex<HashSet<&'static str>>> =
 
 static LOG_TX: std::sync::OnceLock<mpsc::Sender<String>> = std::sync::OnceLock::new();
 
+/// 等待 settings 回复的通道表（id → sender）
+static SETTINGS_WAITERS: std::sync::LazyLock<Mutex<std::collections::HashMap<u64, mpsc::SyncSender<SidecarReply>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
 fn log_async(msg: String) {
     if let Some(tx) = LOG_TX.get() {
         let _ = tx.send(msg);
@@ -63,6 +67,9 @@ struct SidecarReply {
     x: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     y: Option<i32>,
+    /// 当前配置（cmd=settings）：voice/rate/pitch
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    settings: Option<serde_json::Value>,
 }
 
 /// dev 模式：从项目目录找 sidecar 脚本；release 模式：exe 旁 sidecar 目录
@@ -120,6 +127,14 @@ fn spawn_sidecar(app: Arc<tauri::AppHandle>) -> Result<(Child, std::sync::mpsc::
             let Ok(reply) = serde_json::from_str::<SidecarReply>(&line) else {
                 continue;
             };
+            // settings 回复路由到同步等待者（get_settings 命令）
+            if reply.settings.is_some() {
+                let w = SETTINGS_WAITERS.lock().unwrap().remove(&reply.id);
+                if let Some(tx) = w {
+                    let _ = tx.send(reply.clone());
+                    continue;
+                }
+            }
             let _ = app2.emit("sidecar-reply", &reply);
             log_async(format!("[{}] sidecar reply: {}", std::process::id(), line));
         }
@@ -410,6 +425,47 @@ fn model_dir() -> String {
     models_dir().to_string_lossy().to_string()
 }
 
+/// 读取当前 TTS 配置（音色/语速/语调），sidecar 可能未启动，失败返回默认
+#[tauri::command]
+fn get_settings(app: tauri::AppHandle) -> serde_json::Value {
+    let default = serde_json::json!({
+        "voice": "zh-CN-XiaoxiaoNeural",
+        "rate": 0,
+        "pitch": "medium"
+    });
+    let state = app.state::<SidecarState>();
+    let tx = {
+        let mut guard = state.0.lock().unwrap();
+        if let Some((_c, exit_rx, _tx)) = guard.as_ref() {
+            if exit_rx.try_recv() == Ok(true) {
+                *guard = None;
+            }
+        }
+        if guard.is_none() {
+            match spawn_sidecar(Arc::new(app.clone())) {
+                Ok(s) => { *guard = Some(s); }
+                Err(_) => return default,
+            }
+        }
+        guard.as_ref().map(|(_c, _e, tx)| tx.clone())
+    };
+    let Some(tx) = tx else { return default };
+
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let (resp_tx, resp_rx) = mpsc::sync_channel::<SidecarReply>(1);
+    {
+        let mut registered = SETTINGS_WAITERS.lock().unwrap();
+        registered.insert(id, resp_tx);
+    }
+    if tx.send(CommandMessage { id, cmd: "settings".into(), payload: String::new() }).is_err() {
+        return default;
+    }
+    match resp_rx.recv_timeout(std::time::Duration::from_secs(2)) {
+        Ok(r) if r.ok && r.settings.is_some() => r.settings.unwrap(),
+        _ => default,
+    }
+}
+
 #[tauri::command]
 fn quit(app: tauri::AppHandle) {
     // 关闭 sidecar 与 grabber 子进程，避免残留孤儿 python
@@ -496,7 +552,7 @@ fn main() {
         .manage(GrabberState(Mutex::new(None)))
         .manage(AppState(Mutex::new((AppMode::Watch, false))))
         .invoke_handler(tauri::generate_handler![
-            read_text, stop_read, set_voice, set_rate, set_pitch, export_mp3, list_models, model_dir, quit, toggle_grab
+            read_text, stop_read, set_voice, set_rate, set_pitch, export_mp3, list_models, model_dir, quit, toggle_grab, get_settings
         ])
         .on_window_event(|window, event| {
             match event {
