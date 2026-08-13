@@ -141,6 +141,23 @@ whenTauriReady(() => {
     }
   });
 
+  // 朗读进度：主窗口广播 frac(0-1) + 当前块内秒数，驱动进度条
+  window.__TAURI__.event.listen("read-progress", (e) => {
+    const p = e.payload || {};
+    const frac = typeof p.frac === "number" ? p.frac : 0;
+    const wrap = $("prog-wrap");
+    const fill = $("prog-fill");
+    const label = $("prog-label");
+    if (!wrap || !fill || !label) return;
+    if (frac <= 0) {
+      wrap.classList.add("hidden");
+      return;
+    }
+    wrap.classList.remove("hidden");
+    fill.style.width = Math.round(frac * 100) + "%";
+    label.textContent = Math.round(frac * 100) + "%";
+  });
+
   // 进入面板时广播就绪（Rust 侧可据此补发状态）
   window.__TAURI__.event.emit("panel-ready", {});
 

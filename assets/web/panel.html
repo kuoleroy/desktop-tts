@@ -119,6 +119,30 @@ html, body {
   padding: 8px 10px;
   border-top: 1px solid #eee;
 }
+.panel-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 2px;
+  font-size: 11px;
+  color: #666;
+}
+.panel-progress.hidden { display: none; }
+.prog-track {
+  flex: 1;
+  height: 6px;
+  background: #f0f2f5;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.prog-fill {
+  height: 100%;
+  width: 0%;
+  background: #1677ff;
+  border-radius: 3px;
+  transition: width 0.3s linear;
+}
+.prog-label { min-width: 60px; text-align: right; }
 </style>
 </head>
 <body>
@@ -140,6 +164,10 @@ html, body {
     <div class="panel-row">
       <button class="p-btn" id="p-export">导出 MP3</button>
       <button class="p-btn toggle" id="p-grab">抓取</button>
+    </div>
+    <div class="panel-progress" id="prog-wrap">
+      <div class="prog-track"><div class="prog-fill" id="prog-fill"></div></div>
+      <span class="prog-label" id="prog-label"></span>
     </div>
     <div class="panel-section">
       <label>音色 <select id="sel-voice">

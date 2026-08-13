@@ -282,6 +282,8 @@ window.playAudioFrom = playAudioFrom;
 let playQueue = [];
 let playingId = 0;
 let queuePaused = false;
+let totalBlocks = 0;
+let currentBlock = 0;
 
 function playQueueItem(idx) {
   if (queuePaused) {
@@ -291,9 +293,13 @@ function playQueueItem(idx) {
   if (!playQueue[idx]) {
     // 播完整个队列
     playQueue = [];
+    totalBlocks = 0;
+    currentBlock = 0;
+    broadcastProgress(1, 0);
     broadcastPlayState("idle");
     return;
   }
+  currentBlock = idx;
   playingId++;
   const myId = playingId;
   const url = playQueue[idx];
@@ -301,10 +307,10 @@ function playQueueItem(idx) {
     if (myId !== playingId) return; // 已被停止/替换
     playQueueItem(idx + 1);
   };
-  playSequence(url, onDone);
+  playSequence(url, onDone, idx);
 }
 
-function playSequence(url, onDone) {
+function playSequence(url, onDone, blockIdx) {
   stopAudio(true); // 停止但不广播 idle（由队列接管）
   audioCtx = audioCtx || new AudioContext();
   if (!audioCtx) {
@@ -334,6 +340,8 @@ function playSequence(url, onDone) {
       };
       audioSrc.onerror = () => onDone();
       audioSrc.start();
+      // 每块播放中定期更新进度（当前块内部时间 / 总时长）
+      startProgressTimer(blockIdx);
       broadcastPlayState("playing");
     } catch (e) {
       setStatus("播放失败: " + e.message);
@@ -342,16 +350,47 @@ function playSequence(url, onDone) {
   })();
 }
 
+// 进度定时器：按 audioCtx.currentTime 与当前块 buffer 时长计算
+let progressTimer = null;
+function startProgressTimer(blockIdx) {
+  clearInterval(progressTimer);
+  progressTimer = setInterval(() => {
+    if (!audioSrc || !audioCtx) {
+      broadcastProgress(blockIdx / Math.max(1, totalBlocks), 0);
+      return;
+    }
+    const dur = audioSrc.buffer ? audioSrc.buffer.duration : 0;
+    const cur = audioCtx.currentTime || 0;
+    const blockFrac = dur > 0 ? Math.min(1, cur / dur) : 0;
+    const frac = (blockIdx + blockFrac) / Math.max(1, totalBlocks);
+    broadcastProgress(frac, cur);
+  }, 500);
+}
+
+function stopProgressTimer() {
+  clearInterval(progressTimer);
+  progressTimer = null;
+}
+
+// 进度事件：整体比例 + 当前块内秒数
+function broadcastProgress(frac, sec) {
+  window.__TAURI__?.event?.emit("read-progress", { frac, sec });
+}
+
 // 停止队列（广播 idle）
 function stopQueue() {
   playingId++;
   queuePaused = false;
   playQueue = [];
+  totalBlocks = 0;
+  currentBlock = 0;
+  stopProgressTimer();
   if (audioSrc) {
     try { audioSrc.stop(); } catch (_) {}
     audioSrc.disconnect();
     audioSrc = null;
   }
+  broadcastProgress(0, 0);
   broadcastPlayState("idle");
 }
 
@@ -359,6 +398,9 @@ function startQueue(paths) {
   stopQueue();
   queuePaused = false;
   playQueue = paths.slice();
+  totalBlocks = playQueue.length;
+  currentBlock = 0;
+  broadcastProgress(0, 0);
   playQueueItem(0);
 }
 
