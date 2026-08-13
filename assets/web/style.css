@@ -176,3 +176,40 @@ html, body {
 }
 .model-entry:hover { background: #f0f2f5; }
 .model-entry.active { background: #e6f0ff; color: #1677ff; }
+/* 右下角缩放手柄 */
+#resize-handle {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  width: 22px;
+  height: 22px;
+  cursor: nwse-resize;
+  opacity: 0;
+  z-index: 50;
+  transition: opacity 0.15s;
+  background: linear-gradient(135deg, transparent 50%, rgba(120,120,140,0.55) 50%);
+  border-bottom-right-radius: 4px;
+}
+#resize-handle:hover { opacity: 1; }
+
+/* 右键菜单 */
+#pet-menu {
+  position: fixed;
+  z-index: 60;
+  background: rgba(255,255,255,0.95);
+  border: 1px solid #d9d9d9;
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.18);
+  padding: 4px;
+  min-width: 130px;
+  font-size: 13px;
+}
+#pet-menu .menu-item {
+  padding: 6px 12px;
+  border-radius: 6px;
+  color: #333;
+  cursor: pointer;
+  white-space: nowrap;
+}
+#pet-menu .menu-item:hover { background: #f0f2f5; }
+#pet-menu.hidden { display: none; }

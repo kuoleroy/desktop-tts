@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "./vendor/GLTFLoader.js";
 import { VRMLoaderPlugin, VRMUtils } from "./vendor/three-vrm.module.min.js";
+import { parseVMD } from "./vmd2vrm.js";
 
 window.__errs = [];
 window.addEventListener("error", (e) => {
@@ -94,6 +95,8 @@ async function loadVRM(url) {
     scene.add(vrm.scene);
     armsDown = false;
     currentModel = url.split("/").pop();
+    // 加载默认舞蹈（VMD 动作），供静置时播放
+    if (!danceName) loadDance(DEFAULT_DANCE);
     bubble(`你好，我是桌面小精灵，请多多关照！`, 2600);
   } catch (e) {
     setStatus("加载失败: " + e.message);
@@ -187,39 +190,143 @@ let armsDown = false;
 const ARM_DOWN = -1.25;
 const ARM_SWING = 0.04;
 
-function relaxArms(v) {
-  const l = v.humanoid.getNormalizedBoneNode("leftUpperArm");
-  const r = v.humanoid.getNormalizedBoneNode("rightUpperArm");
-  if (l) l.rotation.z = ARM_DOWN;
-  if (r) r.rotation.z = -ARM_DOWN;
-  const ll = v.humanoid.getNormalizedBoneNode("leftLowerArm");
-  const rl = v.humanoid.getNormalizedBoneNode("rightLowerArm");
-  if (ll) ll.rotation.z = 0.25;
-  if (rl) rl.rotation.z = -0.25;
+// ---- VMD 舞蹈播放器 ----
+// 静置时播放 VMD 舞蹈动作（真实动作），朗读时暂停。基于 vmd2vrm 转换的骨骼动画。
+let danceClips = null;          // 解析后的舞蹈动画集 [{name,type,times,values}]
+let danceDuration = 0;
+let danceTime = 0;              // 舞蹈播放进度（秒，循环）
+let danceName = "";             // 当前舞蹈标识
+const DEFAULT_DANCE = "5";      // 默认静置舞蹈文件（assets/dance/5.vmd）
+const danceIndex = {};          // boneName -> {rot:{times,values}} 快速查找
+const rotCache = new Map();     // 缓存 Quaternion 避免重复分配
+
+// 把转换结果建成便于按时间采样索引
+function buildDanceIndex(clips) {
+  const idx = {};
+  for (const tl of clips) {
+    if (tl.type !== "rotation") continue;
+    idx[tl.name] = { times: tl.times, values: tl.values };
+  }
+  return idx;
+}
+
+// 采样：返回该骨骼在 t 秒处的四元数（线性插值）
+const _qA = new THREE.Quaternion();
+const _qB = new THREE.Quaternion();
+const _qOut = new THREE.Quaternion();
+function sampleRotation(boneIdx, t) {
+  const tl = danceIndex[boneIdx];
+  if (!tl) return null;
+  const { times, values } = tl;
+  const n = times.length;
+  if (!n) return null;
+  if (t <= times[0]) { _qOut.fromArray(values, 0); return _qOut; }
+  if (t >= times[n - 1]) { _qOut.fromArray(values, (n - 1) * 4); return _qOut; }
+  // 二分定位
+  let lo = 0, hi = n - 1;
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (times[mid] <= t) lo = mid; else hi = mid; }
+  const t0 = times[lo], t1 = times[hi];
+  const v = (t1 === t0) ? 0 : (t - t0) / (t1 - t0);
+  _qA.fromArray(values, lo * 4);
+  _qB.fromArray(values, hi * 4);
+  _qOut.copy(_qA).slerp(_qB, v);
+  return _qOut;
+}
+
+async function loadDance(name) {
+  try {
+    const res = await fetch("dance/" + name + ".vmd");
+    if (!res.ok) throw new Error("fetch " + res.status);
+    const buf = await res.arrayBuffer();
+    const parsed = parseVMD(buf);
+    danceClips = parsed.timelines;
+    danceDuration = parsed.duration || 1;
+    Object.keys(danceIndex).forEach((k) => delete danceIndex[k]);
+    Object.assign(danceIndex, buildDanceIndex(danceClips));
+    danceName = name;
+    danceTime = 0;
+    recordBoneRestPose();
+    console.log("[dance] loaded", name, "duration", danceDuration.toFixed(1), "s");
+  } catch (e) {
+    console.warn("[dance] load failed", name, e);
+  }
+}
+
+// 重置舞蹈驱动的骨骼到默认（rest）姿态，朗读时恢复自然站姿
+let dancePoseApplied = false;
+const boneRestPose = {}; // boneName -> 初始 quaternion（加载模型时记录）
+function recordBoneRestPose() {
+  if (!vrm) return;
+  for (const boneName of Object.keys(danceIndex)) {
+    const node = vrm.humanoid.getNormalizedBoneNode(boneName);
+    if (node) boneRestPose[boneName] = node.quaternion.clone();
+  }
+}
+function resetDancePose() {
+  if (!vrm || !dancePoseApplied) return;
+  for (const boneName of Object.keys(danceIndex)) {
+    const node = vrm.humanoid.getNormalizedBoneNode(boneName);
+    if (node) node.quaternion.copy(boneRestPose[boneName] || new THREE.Quaternion());
+  }
+  dancePoseApplied = false;
+}
+
+function updateDance(dt, t) {
+  if (!vrm) return;
+  if (!danceClips || !danceDuration) { updateDanceSine(dt, t); return; }
+  danceTime += dt;
+  if (danceTime > danceDuration) danceTime -= danceDuration; // 循环
+  for (const boneName of Object.keys(danceIndex)) {
+    const q = sampleRotation(boneName, danceTime);
+    if (!q) continue;
+    const node = vrm.humanoid.getNormalizedBoneNode(boneName);
+    if (node) { node.quaternion.copy(q); dancePoseApplied = true; }
+  }
+}
+
+// 正弦回退动画：VMD 未加载时用的简单动作
+let dancePhase = 0;
+function updateDanceSine(dt, t) {
+  if (!vrm) return;
+  dancePhase += dt * 2.2;
+  const h = vrm.humanoid;
+  const ph = dancePhase;
+  const get = (n) => h.getNormalizedBoneNode(n);
+  const hips = get("hips");
+  if (hips) {
+    hips.rotation.z = Math.sin(ph) * 0.08;
+    hips.rotation.y = Math.sin(ph * 0.5) * 0.12;
+    hips.rotation.x = Math.sin(ph * 0.5 + 0.5) * 0.05;
+  }
+  const chest = get("chest");
+  if (chest) {
+    chest.rotation.y = -Math.sin(ph * 0.5) * 0.15;
+    chest.rotation.z = Math.sin(ph) * 0.04;
+    chest.rotation.x = Math.sin(ph + 0.3) * 0.03;
+  }
+  const lu = get("leftUpperArm"), ru = get("rightUpperArm");
+  if (lu) lu.rotation.z = -Math.PI * 0.55 + Math.sin(ph * 2) * 0.25;
+  if (ru) ru.rotation.z = Math.PI * 0.55 + Math.sin(ph * 2 + Math.PI) * 0.25;
+  const ll = get("leftLowerArm"), rl = get("rightLowerArm");
+  if (ll) ll.rotation.z = -0.4 + Math.sin(ph * 2 + 0.5) * 0.3;
+  if (rl) rl.rotation.z = 0.4 + Math.sin(ph * 2 + 1) * 0.3;
+  const luL = get("leftUpperLeg"), ruL = get("rightUpperLeg");
+  if (luL) luL.rotation.x = Math.max(0, Math.sin(ph)) * 0.5;
+  if (ruL) ruL.rotation.x = Math.max(0, Math.sin(ph + Math.PI)) * 0.5;
+  const llo = get("leftLowerLeg"), rlo = get("rightLowerLeg");
+  if (llo) llo.rotation.x = Math.max(0, Math.sin(ph)) * 0.35;
+  if (rlo) rlo.rotation.x = Math.max(0, Math.sin(ph + Math.PI)) * 0.35;
+  const head = get("head");
+  if (head) {
+    head.rotation.z = Math.sin(ph) * 0.1;
+    head.rotation.y = Math.sin(ph * 0.5) * 0.1;
+  }
 }
 
 function updateIdle(dt, t) {
   if (!vrm) return;
-  if (!armsDown) {
-    relaxArms(vrm);
-    armsDown = true;
-  }
-  breathe += dt * 1.6;
-  const b = Math.sin(breathe) * 0.015;
-  const chest = vrm.humanoid.getNormalizedBoneNode("chest");
-  if (chest) {
-    chest.rotation.x = b;
-    chest.rotation.z = Math.sin(t * 0.7) * 0.008;
-  }
-  const head = vrm.humanoid.getNormalizedBoneNode("head");
-  if (head) {
-    head.rotation.y = Math.sin(t * 0.4) * 0.03;
-    head.rotation.z = Math.sin(t * 0.3 + 1) * 0.015;
-  }
-  const l = vrm.humanoid.getNormalizedBoneNode("leftUpperArm");
-  const r = vrm.humanoid.getNormalizedBoneNode("rightUpperArm");
-  if (l) l.rotation.z = ARM_DOWN + Math.sin(t * 1.6) * ARM_SWING;
-  if (r) r.rotation.z = -ARM_DOWN - Math.sin(t * 1.6 + 0.4) * ARM_SWING;
+  // 始终跳舞（不区分是否朗读）
+  updateDance(dt, t);
   blinkT -= dt;
   if (blinkT < 0) {
     blinkT = Math.min(0.18, nextBlink);
@@ -263,6 +370,7 @@ async function playAudioFrom(blobUrl) {
     audioSrc.onended = () => {
       mouthLevel = 0;
       if (vrm) vrm.expressionManager?.setValue("aa", 0);
+      audioSrc = null;
       broadcastPlayState("idle");
     };
     audioSrc.onerror = (e) => {
@@ -336,9 +444,10 @@ function playSequence(url, onDone, blockIdx) {
       audioSrc.onended = () => {
         mouthLevel = 0;
         if (vrm) vrm.expressionManager?.setValue("aa", 0);
+        audioSrc = null;
         onDone();
       };
-      audioSrc.onerror = () => onDone();
+      audioSrc.onerror = () => { audioSrc = null; onDone(); };
       audioSrc.start();
       // 每块播放中定期更新进度（当前块内部时间 / 总时长）
       startProgressTimer(blockIdx);
@@ -471,6 +580,10 @@ function updateMouth() {
 
 /* ---- 主循环 ---- */
 const clock = new THREE.Clock();
+const viewRot = { x: 0, y: 0 };
+let viewZoom = 1; // 滚轮缩放
+const _up = new THREE.Vector3(0, 1, 0);
+const _rightAxis = new THREE.Vector3(1, 0, 0);
 function renderLoop() {
   const dt = Math.min(clock.getDelta(), 0.1);
   const t = clock.elapsedTime;
@@ -486,7 +599,11 @@ function renderLoop() {
       size.x / (2 * ratio * Math.tan(b)),
       size.z / (2 * ratio * Math.tan(a))
     );
-    camera.position.set(center.x, center.y - size.y * 0.15, center.z + dist);
+    // 先算基准相机位（绕 center），再叠加右键视角旋转
+    const base = new THREE.Vector3(center.x, center.y - size.y * 0.15, center.z + dist * viewZoom);
+    camera.position.copy(base).sub(center);
+    camera.position.applyAxisAngle(_up, viewRot.y).applyAxisAngle(_rightAxis, viewRot.x);
+    camera.position.add(center);
     camera.lookAt(center.x, center.y + size.y * 0.05, center.z);
   }
   updateIdle(dt, t);
@@ -539,6 +656,94 @@ whenTauriReady(() => {
     window.__TAURI__.event.emit("mode-confirmed", "main:" + e.payload);
     setMode(e.payload);
   });
+  // 双击模型 → 显示面板（回到面板）。由 Rust 处理显示并切交互模式。
+  document.addEventListener("dblclick", () => {
+    window.__TAURI__.event.emit("pet-dblclick", {});
+  });
+  // 模型拖动：位移超过阈值才拖动窗口（可交互模式生效），避免与双击冲突
+  const DRAG_THRESHOLD = 20;
+  let press = null;
+  document.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    press = { x: e.clientX, y: e.clientY, moved: false };
+  });
+  document.addEventListener("mousemove", (e) => {
+    if (!press || press.moved) return;
+    if (Math.hypot(e.clientX - press.x, e.clientY - press.y) > DRAG_THRESHOLD) {
+      press.moved = true;
+      press = null;
+      try {
+        window.__TAURI__.window.getCurrentWindow().startDragging();
+      } catch (err) {
+        /* 穿透/预览时无 Tauri 拖动，忽略 */
+      }
+    }
+  });
+  document.addEventListener("mouseup", () => { press = null; });
+  // 右键：按下未拖动 → 弹菜单；拖动 → 视角水平+垂直旋转（轨道相机）
+  const menu = document.getElementById("pet-menu");
+  let rightDrag = { on: false, startX: 0, startY: 0, lastX: 0, lastY: 0, moved: false };
+  document.addEventListener("contextmenu", (e) => e.preventDefault());
+  document.addEventListener("mousedown", (e) => {
+    if (e.button === 2) {
+      rightDrag.on = true; rightDrag.moved = false;
+      rightDrag.startX = rightDrag.lastX = e.clientX;
+      rightDrag.startY = rightDrag.lastY = e.clientY;
+    }
+  });
+  document.addEventListener("mousemove", (e) => {
+    if (!rightDrag.on) return;
+    const dx = e.clientX - rightDrag.lastX;
+    const dy = e.clientY - rightDrag.lastY;
+    if (Math.hypot(e.clientX - rightDrag.startX, e.clientY - rightDrag.startY) > 20) rightDrag.moved = true;
+    rightDrag.lastX = e.clientX;
+    rightDrag.lastY = e.clientY;
+    viewRot.y -= dx * 0.008;
+    viewRot.x = Math.max(-1.4, Math.min(1.4, viewRot.x - dy * 0.005));
+  });
+  document.addEventListener("mouseup", (e) => {
+    if (e.button === 2 && rightDrag.on && !rightDrag.moved && menu) {
+      menu.classList.remove("hidden");
+      menu.style.left = Math.min(e.clientX, window.innerWidth - menu.offsetWidth - 4) + "px";
+      menu.style.top = Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 4) + "px";
+    }
+    rightDrag.on = false;
+  });
+  document.addEventListener("mouseleave", () => { rightDrag.on = false; });
+  document.addEventListener("click", (e) => {
+    if (menu && !menu.contains(e.target)) menu.classList.add("hidden");
+  });
+  menu?.querySelectorAll(".menu-item").forEach((item) => {
+    item.addEventListener("click", async () => {
+      const a = item.dataset.action;
+      if (a === "reset-size") {
+        try {
+          const win = window.__TAURI__.window.getCurrentWindow();
+          const W = window.__TAURI__.window;
+          const size = new W.PhysicalSize(240, 300);
+          await win.setSize(size);
+          setStatus("已恢复默认大小");
+        } catch (err) {
+          setStatus("恢复失败: " + (err?.message || err));
+        }
+      }
+      menu.classList.add("hidden");
+    });
+  });
+  // 右下角缩放手柄 → 系统 resize 拖拽
+  document.getElementById("resize-handle")?.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    try {
+      window.__TAURI__.window.getCurrentWindow().startResizeDrag(
+        window.__TAURI__.window.WindowResizeEdge.BottomRight
+      );
+    } catch (_) {}
+  });
+  // 滚轮缩放视角（模型放大缩小）
+  document.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    viewZoom = Math.max(0.3, Math.min(4, viewZoom * (e.deltaY > 0 ? 1.1 : 0.9)));
+  }, { passive: false });
   window.__TAURI__.event.listen("tts", (e) => {
     // 路径含反斜杠需归一化为正斜杠，否则 asset 协议 URL 解析失败
     playAudioFrom(window.__TAURI__.core.convertFileSrc(String(e.payload).replace(/\\/g, "/")));

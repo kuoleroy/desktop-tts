@@ -12,6 +12,8 @@
     "core:window:allow-set-position",
     "core:window:allow-outer-position",
     "core:window:allow-start-dragging",
+    "core:window:allow-set-size",
+    "core:window:allow-outer-size",
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister",
     "global-shortcut:allow-is-registered"

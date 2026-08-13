@@ -92,17 +92,50 @@ $("p-quit").addEventListener("click", () => {
 });
 
 whenTauriReady(() => {
-  // 面板拖拽移动：按住标题栏可拖动窗口（无边框窗口无系统标题栏）
+  // 面板标题栏：位移判拖拽 + 双击返回模型（不靠时间猜，避免和拖拽冲突）
   const head = document.querySelector(".panel-head");
   if (head) {
+    const DRAG_THRESHOLD = 5; // 超过 5px 位移才视为拖动
+    let press = null;          // {x, y, moved, dragging}
+    let lastClick = 0;
+    let clickTimer = null;
+
     head.addEventListener("mousedown", (e) => {
-      // 避免在按钮上按下触发拖拽（返回观赏按钮）
       if (e.target.closest("button")) return;
-      try {
-        window.__TAURI__.window.getCurrentWindow().startDragging();
-      } catch (err) {
-        showHint("拖动失败：" + (err && err.message || err), true);
+      press = { x: e.clientX, y: e.clientY, moved: false, dragging: false };
+    });
+    // 移动监听放 body，避免 mousedown 后鼠标移出 head 丢失
+    document.addEventListener("mousemove", (e) => {
+      if (!press || press.dragging) return;
+      const dx = e.clientX - press.x;
+      const dy = e.clientY - press.y;
+      if (!press.moved && Math.hypot(dx, dy) > DRAG_THRESHOLD) {
+        press.moved = true;
       }
+      if (press.moved) {
+        press.dragging = true;
+        press = null; // 已交给原生拖拽
+        try {
+          window.__TAURI__.window.getCurrentWindow().startDragging();
+        } catch (err) {
+          showHint("拖动失败：" + (err && err.message || err), true);
+        }
+      }
+    });
+    document.addEventListener("mouseup", () => {
+      if (press && !press.moved) {
+        // 未移动 = 一次点击（用于双击判定）
+        const now = Date.now();
+        if (lastClick && now - lastClick <= 320) {
+          lastClick = 0;
+          if (window.__TAURI__?.event) window.__TAURI__.event.emit("panel-closing", {});
+        } else {
+          lastClick = now;
+          clearTimeout(clickTimer);
+          clickTimer = setTimeout(() => { lastClick = 0; }, 400);
+        }
+      }
+      press = null;
     });
   }
 

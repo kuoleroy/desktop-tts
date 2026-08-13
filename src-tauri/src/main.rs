@@ -50,7 +50,7 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// 主窗口穿透状态（true=穿透）。Ctrl+Shift+X 切换。
 /// 默认 1 = 穿透（不挡鼠标，可点击桌宠下方窗口）
-static CLICK_THROUGH: AtomicU64 = AtomicU64::new(1);
+static CLICK_THROUGH: AtomicU64 = AtomicU64::new(0); // 临时：默认可交互（不穿透），便于测试
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct SidecarReply {
@@ -813,6 +813,35 @@ log("windows created");
                         let _ = panel_app_handle.emit("toggle-mode", "watch");
                         log("panel-closing: emitted watch");
                         st.1 = false;
+                    }
+                });
+            }
+
+            // ---- 双击模型 → 显示面板并切交互（与双击面板回模型互补） ----
+            static LISTENER_PET_DBLCLICK: &str = "pet-dblclick";
+            if !REGISTERED_EVENTS.lock().unwrap().contains(LISTENER_PET_DBLCLICK) {
+                REGISTERED_EVENTS.lock().unwrap().insert(LISTENER_PET_DBLCLICK);
+                let pet_app_handle = Arc::clone(&app_handle);
+                app.listen_any(LISTENER_PET_DBLCLICK, move |_| {
+                    log("pet-dblclick received");
+                    let app_state = pet_app_handle.state::<AppState>();
+                    let mut st = app_state.0.lock().unwrap();
+                    if !st.1 {
+                        if let (Some(main), Some(panel)) = (
+                            pet_app_handle.get_webview_window("main"),
+                            pet_app_handle.get_webview_window("panel"),
+                        ) {
+                            if let Ok(pos) = main.outer_position() {
+                                let win_size = panel.inner_size().ok().unwrap_or(tauri::PhysicalSize::new(280, 400));
+                                let (cx, cy) = clamp_to_work_area(&pet_app_handle, pos.x + 260, pos.y + 20, win_size.width, win_size.height);
+                                let _ = panel.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(cx, cy)));
+                            }
+                            let _ = panel.show();
+                        }
+                        st.0 = AppMode::Interact;
+                        st.1 = true;
+                        let _ = pet_app_handle.emit("toggle-mode", "interact");
+                        log("pet-dblclick: panel shown, interact mode");
                     }
                 });
             }
