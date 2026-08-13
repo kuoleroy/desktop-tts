@@ -5,7 +5,10 @@ __pycache__/
 *.pyc
 @AutomationLog.txt
 
-# ---- 日志 / 调试 / 截图 ----
+# ---- 运行时生成的用户配置（改音色/语速会变化）----
+settings.json
+
+# ---- 日志 / 调试 / 截图 / 临时脚本 ----
 *.log
 build.err
 diag.json
@@ -13,6 +16,16 @@ verify*.png
 panel_shot.png
 web_req.log
 tools/exp/
+screen*.png
+panel_fix.js
+restart_dev.bat
+_run_err.txt
+_run_out.txt
+_run_out_*.txt
+src-tauri/run_error.txt
+src-tauri/run_output.txt
+sidecar/_grab_test.py
+sidecar/test_interrupt.py
 
 # ---- 环境 / 本地配置 ----
 .env
