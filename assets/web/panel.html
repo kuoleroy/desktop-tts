@@ -79,10 +79,15 @@ html, body {
   cursor: pointer;
 }
 .p-btn:hover { background: #f0f2f5; }
+.p-btn.active { background: #1677ff; border-color: #1677ff; color: #fff; }
+.p-btn.active:hover { background: #0958d9; }
 .p-btn.primary { background: #1677ff; border-color: #1677ff; color: #fff; }
 .p-btn.primary:hover { background: #0958d9; }
 .p-btn.danger { background: #fff; border-color: #ff4d4f; color: #ff4d4f; }
 .p-btn.danger:hover { background: #fff1f0; }
+/* 抓取开关样式：开启态高亮，类似单选框按下 */
+.p-btn.toggle { background: #fff; }
+.p-btn.toggle.active { background: #1677ff; border-color: #1677ff; color: #fff; }
 .panel-section {
   border-top: 1px solid #eee;
   border-bottom: 1px solid #eee;
@@ -124,12 +129,13 @@ html, body {
       <textarea id="ptext" rows="4" placeholder="输入要朗读 / 导出的文本...">你好，我是桌面小精灵。选中文字，我就能帮你朗读出来。</textarea>
     </div>
     <div class="panel-row">
-      <button class="p-btn primary" id="p-read">朗读测试</button>
+      <button class="p-btn" id="p-read">朗读</button>
+      <button class="p-btn" id="p-pause">暂停</button>
       <button class="p-btn" id="p-stop">停止</button>
     </div>
     <div class="panel-row">
       <button class="p-btn" id="p-export">导出 MP3</button>
-      <button class="p-btn" id="p-grab">抓取朗读</button>
+      <button class="p-btn toggle" id="p-grab">抓取</button>
     </div>
     <div class="panel-section">
       <label>音色 <select id="sel-voice">

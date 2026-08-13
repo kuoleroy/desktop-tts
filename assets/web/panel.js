@@ -48,6 +48,18 @@ function currentText() {
   return "你好，我是桌面小精灵。选中文字，我就能帮你朗读出来。";
 }
 
+// 设置某个按钮的生效(蓝色)状态
+function setActive(id, on) {
+  const btn = $(id);
+  if (btn) btn.classList.toggle("active", !!on);
+}
+
+// 设置暂停/开始按钮文字
+function setPauseLabel(label) {
+  const btn = $("p-pause");
+  if (btn) btn.textContent = label;
+}
+
 // 状态同步：Rust 全局广播 toggle-mode，面板只接收、不猜状态
 // Windows 上 __TAURI__ 注入晚于顶层脚本（tauri #12990），须等就绪
 function whenTauriReady(cb) {
@@ -84,45 +96,106 @@ whenTauriReady(() => {
   });
   // 导出完成：Rust 广播绝对路径
   window.__TAURI__.event.listen("export-done", (e) => {
+    setActive("p-export", false);
     showHint("已导出：" + e.payload);
+  });
+
+  // 全局选区抓取：sidecar 捕获选中文字后，Rust 广播 grab-text 填充文本框
+  // 抓取是开关式，抓到后保持开启以便连续抓取
+  window.__TAURI__.event.listen("grab-text", (e) => {
+    const text = (e.payload || "").toString();
+    if (!$("ptext")) return;
+    $("ptext").value = text;
+    $("ptext").focus();
+    showHint(text ? "已抓取选中文字" : "未检测到选中文字", !text);
+  });
+
+  // 播放状态：主窗口广播 playing/paused/idle，同步朗读与暂停按钮
+  window.__TAURI__.event.listen("play-state", (e) => {
+    const s = e.payload;
+    setActive("p-read", s === "playing");
+    setActive("p-pause", s === "paused");
+    setPauseLabel(s === "paused" ? "开始" : "暂停");
+    if (s === "idle") {
+      setActive("p-export", false);
+      setActive("p-grab", false);
+      setPauseLabel("暂停");
+    }
   });
 
   // 进入面板时广播就绪（Rust 侧可据此补发状态）
   window.__TAURI__.event.emit("panel-ready", {});
 });
 
-// 朗读：读文本区内容（空则用默认句）
+// 朗读：读文本区内容（空则用默认句），播放中按钮变蓝
 $("p-read").addEventListener("click", () => {
-  TTS.read(currentText()).catch((e) => showHint("朗读失败：" + e.message, true));
+  setActive("p-read", true);
+  setActive("p-pause", false);
+  setPauseLabel("暂停");
+  TTS.read(currentText()).catch((e) => {
+    setActive("p-read", false);
+    showHint("朗读失败：" + e.message, true);
+  });
 });
 
-// 停止：广播给主窗口真实停止音频，同时通知 sidecar
+// 暂停/开始：切换主窗口音频的暂停状态（按钮文字随状态变化）
+$("p-pause").addEventListener("click", () => {
+  if (!$("p-pause").classList.contains("active")) {
+    // 当前是"暂停"，点击后暂停
+    if (window.__TAURI__?.event) window.__TAURI__.event.emit("pause-audio", {});
+  } else {
+    // 当前是"开始"，点击后恢复
+    if (window.__TAURI__?.event) window.__TAURI__.event.emit("resume-audio", {});
+  }
+});
+
+// 停止：广播给主窗口真实停止音频，同时通知 sidecar；并让所有按钮恢复朴素
 $("p-stop").addEventListener("click", () => {
   TTS.stop();
   if (window.__TAURI__?.event) {
     window.__TAURI__.event.emit("stop-audio", {});
   }
+  setActive("p-read", false);
+  setActive("p-export", false);
+  setActive("p-grab", false);
+  setActive("p-pause", false);
+  setPauseLabel("暂停");
   showHint("已停止");
 });
 
 // 导出 MP3：合成并写入 Downloads，完成时经 export-done 提示
 $("p-export").addEventListener("click", () => {
+  setActive("p-export", true);
   showHint("正在合成导出...");
-  TTS.export(currentText()).catch((e) => showHint("导出失败：" + e.message, true));
+  TTS.export(currentText()).catch((e) => {
+    setActive("p-export", false);
+    showHint("导出失败：" + e.message, true);
+  });
 });
 
-// 抓取朗读：读取系统剪贴板文字并朗读
+// 抓取开关：开启后持续监控鼠标选区，选中文字即移动面板并填充文本；再次点击关闭
+let grabActive = false;
 $("p-grab").addEventListener("click", async () => {
   try {
-    const txt = await navigator.clipboard.readText();
-    if (!txt || !txt.trim()) {
-      showHint("剪贴板为空", true);
-      return;
+    if (window.__TAURI__?.core) {
+      grabActive = !grabActive;
+      await window.__TAURI__.core.invoke("toggle_grab", { on: grabActive });
+      setActive("p-grab", grabActive);
+      showHint(grabActive ? "抓取已开启，请用鼠标选中要朗读的文字..." : "抓取已关闭");
+    } else {
+      // 浏览器预览兜底：直接读剪贴板
+      const txt = await navigator.clipboard.readText();
+      if (!txt || !txt.trim()) {
+        showHint("剪贴板为空", true);
+        return;
+      }
+      TTS.read(txt).catch((e) => showHint("朗读失败：" + e.message, true));
+      showHint("已抓取剪贴板朗读");
     }
-    TTS.read(txt).catch((e) => showHint("朗读失败：" + e.message, true));
-    showHint("已抓取剪贴板朗读");
   } catch (e) {
-    showHint("读取剪贴板失败，请先在文本中 Ctrl+C", true);
+    setActive("p-grab", false);
+    grabActive = false;
+    showHint("操作失败：" + e.message, true);
   }
 });
 

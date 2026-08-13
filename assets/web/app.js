@@ -93,8 +93,8 @@ async function loadVRM(url) {
     vrm = loaded;
     scene.add(vrm.scene);
     armsDown = false;
-    currentModel = url.split("/").pop();    setStatus("模型: " + currentModel);
-    bubble(`我是 ${currentModel.replace(/\.vrm$/i, "")}，请多多关照！`, 2600);
+    currentModel = url.split("/").pop();
+    bubble(`你好，我是桌面小精灵，请多多关照！`, 2600);
   } catch (e) {
     setStatus("加载失败: " + e.message);
   }
@@ -263,16 +263,25 @@ async function playAudioFrom(blobUrl) {
     audioSrc.onended = () => {
       mouthLevel = 0;
       if (vrm) vrm.expressionManager?.setValue("aa", 0);
+      broadcastPlayState("idle");
     };
     audioSrc.onerror = (e) => {
       setStatus("Audio playback error: " + e.message);
+      broadcastPlayState("idle");
     };
     audioSrc.start();
+    broadcastPlayState("playing");
   } catch (e) {
     setStatus("Audio playback failed: " + e.message);
+    broadcastPlayState("idle");
   }
 }
 window.playAudioFrom = playAudioFrom;
+
+// 播放状态：playing / paused / idle
+function broadcastPlayState(state) {
+  window.__TAURI__?.event?.emit("play-state", state);
+}
 
 function stopAudio() {
   if (audioSrc) {
@@ -280,8 +289,29 @@ function stopAudio() {
     audioSrc.disconnect();
     audioSrc = null;
   }
+  if (audioCtx && audioCtx.state === "suspended") {
+    audioCtx.resume().catch(() => {});
+  }
+  broadcastPlayState("idle");
 }
 window.stopAudio = stopAudio;
+
+// 暂停 / 恢复播放
+function pauseAudio() {
+  if (!audioCtx || !audioSrc) return;
+  if (audioCtx.state === "running") {
+    audioCtx.suspend().then(() => broadcastPlayState("paused")).catch(() => {});
+  }
+}
+window.pauseAudio = pauseAudio;
+
+function resumeAudio() {
+  if (!audioCtx || !audioSrc) return;
+  if (audioCtx.state === "suspended") {
+    audioCtx.resume().then(() => broadcastPlayState("playing")).catch(() => {});
+  }
+}
+window.resumeAudio = resumeAudio;
 
 const freqData = new Uint8Array(128);
 function updateMouth() {
@@ -378,6 +408,9 @@ whenTauriReady(() => {
     if (vrm) vrm.expressionManager?.setValue("aa", 0);
     bubble("已停止朗读", 1600);
   });
+  // 面板「暂停/开始」→ 暂停/恢复本窗口音频
+  window.__TAURI__.event.listen("pause-audio", () => pauseAudio());
+  window.__TAURI__.event.listen("resume-audio", () => resumeAudio());
 });
 
 /* ---- 进入交互模式时初始化控件 ---- */

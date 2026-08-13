@@ -32,6 +32,9 @@ _active_future = None
 _future_lock = threading.Lock()
 _stop_flag = threading.Event()
 
+# 全局 stdout 写锁（主线程与抓取线程并发写时避免交错）
+_STDOUT_LOCK = threading.Lock()
+
 
 def _ensure_loop():
     global _loop
@@ -70,8 +73,9 @@ def _cancel_active():
 
 
 def out(obj):
-    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+    with _STDOUT_LOCK:
+        sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
 
 
 def _edge_synth(text, fname):

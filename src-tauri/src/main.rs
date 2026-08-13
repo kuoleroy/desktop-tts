@@ -39,6 +39,7 @@ struct CommandMessage {
 }
 
 struct SidecarState(Mutex<Option<(Child, std::sync::mpsc::Receiver<bool>, mpsc::Sender<CommandMessage>)>>);
+struct GrabberState(Mutex<Option<(Child, std::sync::mpsc::Receiver<bool>, mpsc::Sender<CommandMessage>)>>);
 struct AppState(Mutex<(AppMode, bool)>);
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -53,6 +54,15 @@ struct SidecarReply {
     /// 导出 MP3 时的绝对路径（cmd=export）
     #[serde(skip_serializing_if = "Option::is_none")]
     file: Option<String>,
+    /// 全局选区抓取结果（grab 消息）：true 表示带文本
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    grab: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    x: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    y: Option<i32>,
 }
 
 /// dev 模式：从项目目录找 sidecar 脚本；release 模式：exe 旁 sidecar 目录
@@ -79,12 +89,18 @@ fn sidecar_dir() -> std::path::PathBuf {
 fn spawn_sidecar(app: Arc<tauri::AppHandle>) -> Result<(Child, std::sync::mpsc::Receiver<bool>, mpsc::Sender<CommandMessage>), String> {
     let py = std::env::var("PYTHON").unwrap_or_else(|_| "python".into());
     let script = sidecar_script();
+    let err_log = sidecar_dir().join("sidecar_stderr.log");
+    let stderr_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&err_log)
+        .map_err(|e| format!("open stderr log {err_log:?}: {e}"))?;
     let mut child = Command::new(&py)
         .arg(&script)
         .current_dir(sidecar_dir())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::from(stderr_file))
         .spawn()
         .map_err(|e| format!("sidecar spawn failed (python={py}): {e}"))?;
 
@@ -98,7 +114,7 @@ fn spawn_sidecar(app: Arc<tauri::AppHandle>) -> Result<(Child, std::sync::mpsc::
         let reader = BufReader::new(stdout);
         for line in reader.lines() {
             let Ok(line) = line else {
-                log_error(&app2, "Sidecar stdout closed/error");
+                log_error(&app2, format!("Sidecar stdout error: {line:?}"));
                 break;
             };
             let Ok(reply) = serde_json::from_str::<SidecarReply>(&line) else {
@@ -118,21 +134,161 @@ fn spawn_sidecar(app: Arc<tauri::AppHandle>) -> Result<(Child, std::sync::mpsc::
             for msg in cmd_rx {
                 let json = serde_json::json!({"id": msg.id, "cmd": msg.cmd, "text": msg.payload});
                 if serde_json::to_writer(&mut stdin, &json).is_err() {
+                    log_error(&app, "Sidecar stdin write error");
                     break;
                 }
                 if stdin.write_all(b"\n").is_err() {
+                    log_error(&app, "Sidecar stdin write_all error");
                     break;
                 }
                 if stdin.flush().is_err() {
+                    log_error(&app, "Sidecar stdin flush error");
                     break;
                 }
             }
+            log_error(&app, "Sidecar stdin writer exited");
         });
     } else {
         log_error(&app, "Sidecar stdin unavailable");
     }
 
     Ok((child, exit_rx, cmd_tx))
+}
+
+/// 独立抓取进程脚本路径（与 TTS sidecar 隔离，避免原生崩溃拖垮朗读）
+fn grabber_script() -> std::path::PathBuf {
+    if cfg!(debug_assertions) {
+        let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("sidecar")
+            .join("tts_grabber.py");
+        if dev.exists() {
+            return dev;
+        }
+    }
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("sidecar").join("tts_grabber.py")))
+        .unwrap_or_else(|| std::path::PathBuf::from("sidecar/tts_grabber.py"))
+}
+
+/// 拉起独立抓取进程，读取其 stdout 中的 grab 消息并处理；返回 (child, exit_rx, cmd_tx)
+fn spawn_grabber(app: Arc<tauri::AppHandle>) -> Result<(Child, std::sync::mpsc::Receiver<bool>, mpsc::Sender<CommandMessage>), String> {
+    let py = std::env::var("PYTHON").unwrap_or_else(|_| "python".into());
+    let script = grabber_script();
+    let err_log = sidecar_dir().join("grabber_stderr.log");
+    let stderr_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&err_log)
+        .map_err(|e| format!("open grabber stderr log {err_log:?}: {e}"))?;
+    let mut child = Command::new(&py)
+        .arg(&script)
+        .current_dir(sidecar_dir())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::from(stderr_file))
+        .spawn()
+        .map_err(|e| format!("grabber spawn failed (python={py}): {e}"))?;
+
+    // 命令通道 → 写入 grabber stdin（arm 等指令）
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<CommandMessage>();
+    if let Some(mut stdin) = child.stdin.take() {
+        let app_writer = Arc::clone(&app);
+        thread::spawn(move || {
+            use std::io::Write;
+            for msg in cmd_rx {
+                let json = serde_json::json!({"id": msg.id, "cmd": msg.cmd, "text": msg.payload});
+                if serde_json::to_writer(&mut stdin, &json).is_err() {
+                    log_error(&app_writer, "Grabber stdin write error");
+                    break;
+                }
+                if stdin.write_all(b"\n").is_err() {
+                    log_error(&app_writer, "Grabber stdin write_all error");
+                    break;
+                }
+                if stdin.flush().is_err() {
+                    log_error(&app_writer, "Grabber stdin flush error");
+                    break;
+                }
+            }
+            log_error(&app_writer, "Grabber stdin writer exited");
+        });
+    } else {
+        log_error(&app, "Grabber stdin unavailable");
+    }
+
+    let (exit_tx, exit_rx) = std::sync::mpsc::channel::<bool>();
+    let stdout = child.stdout.take().expect("grabber stdout");
+    let app2 = Arc::clone(&app);
+    thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            let Ok(line) = line else {
+                log_error(&app2, format!("Grabber stdout error: {line:?}"));
+                break;
+            };
+            let Ok(reply) = serde_json::from_str::<SidecarReply>(&line) else {
+                continue;
+            };
+            if reply.grab {
+                handle_grab(
+                    &app2,
+                    reply.text.as_deref().unwrap_or(""),
+                    reply.x,
+                    reply.y,
+                );
+            }
+        }
+        log_error(&app2, "Grabber process exited");
+        let _ = exit_tx.send(true);
+    });
+
+    Ok((child, exit_rx, cmd_tx))
+}
+
+/// 命令抓取进程开始监控选区（点击「抓取朗读」按钮时调用）
+fn grabber_cmd(app: &tauri::AppHandle, cmd: &str) {
+    let state = app.state::<GrabberState>();
+    let guard = state.0.lock().unwrap();
+    if let Some((_child, _exit_rx, cmd_tx)) = guard.as_ref() {
+        let _ = cmd_tx.send(CommandMessage { id: NEXT_ID.fetch_add(1, Ordering::Relaxed), cmd: cmd.into(), payload: String::new() });
+        log_async(format!("[grabber] {cmd} requested"));
+    } else {
+        log_async("[grabber] not running, cannot send cmd".to_string());
+    }
+}
+
+/// 前端调用：开启/关闭抓取（开关式）
+#[tauri::command]
+fn toggle_grab(app: tauri::AppHandle, on: bool) {
+    grabber_cmd(&app, if on { "arm" } else { "disarm" });
+}
+
+/// 处理全局选区抓取：把面板移到选区旁并填充文本，切到交互态
+fn handle_grab(app: &tauri::AppHandle, text: &str, x: Option<i32>, y: Option<i32>) {
+    log_async(format!("[{}] grab text ({} chars)", std::process::id(), text.chars().count()));
+    // 状态：切到交互态
+    {
+        let st = app.state::<AppState>();
+        let mut guard = st.0.lock().unwrap();
+        guard.0 = AppMode::Interact;
+        guard.1 = true;
+    }
+    // 移动面板到鼠标/选区位置（在鼠标下方一点，避免遮挡）
+    if let Some(p) = app.get_webview_window("panel") {
+        let _ = p.show();
+        if let (Some(px), Some(py)) = (x, y) {
+            let _ = p.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
+                px + 12,
+                py + 16,
+            )));
+        }
+    }
+    // 通知前端填充文本
+    let _ = app.emit("grab-text", text);
+    // 广播模式切换
+    let _ = app.emit("toggle-mode", "interact");
 }
 
 fn send_cmd(app: &tauri::AppHandle, cmd: &str, payload: &str) {
@@ -256,14 +412,25 @@ fn model_dir() -> String {
 
 #[tauri::command]
 fn quit(app: tauri::AppHandle) {
-    // 关闭 sidecar 子进程，避免残留孤儿 python
-    let state = app.state::<SidecarState>();
-    let mut guard = state.0.lock().unwrap();
-    if let Some((child, _, _)) = guard.as_mut() {
-        let _ = child.kill();
-        let _ = child.wait();
+    // 关闭 sidecar 与 grabber 子进程，避免残留孤儿 python
+    {
+        let state = app.state::<SidecarState>();
+        let mut guard = state.0.lock().unwrap();
+        if let Some((child, _, _)) = guard.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        *guard = None;
     }
-    *guard = None;
+    {
+        let state = app.state::<GrabberState>();
+        let mut guard = state.0.lock().unwrap();
+        if let Some((child, _, _)) = guard.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        *guard = None;
+    }
     app.exit(0);
 }
 
@@ -326,9 +493,10 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(SidecarState(Mutex::new(None)))
+        .manage(GrabberState(Mutex::new(None)))
         .manage(AppState(Mutex::new((AppMode::Watch, false))))
         .invoke_handler(tauri::generate_handler![
-            read_text, stop_read, set_voice, set_rate, set_pitch, export_mp3, list_models, model_dir, quit
+            read_text, stop_read, set_voice, set_rate, set_pitch, export_mp3, list_models, model_dir, quit, toggle_grab
         ])
         .on_window_event(|window, event| {
             match event {
@@ -548,6 +716,98 @@ fn main() {
                 REGISTERED_EVENTS.lock().unwrap().insert(LISTENER_MODE_CONFIRMED);
                 app.listen_any(LISTENER_MODE_CONFIRMED, move |ev| {
                     log(&format!("frontend mode-confirmed: {}", ev.payload()));
+                });
+            }
+
+            // ---- 启动即拉起 TTS sidecar（朗读/导出用）----
+            {
+                let state = app_handle.state::<SidecarState>();
+                let mut guard = state.0.lock().unwrap();
+                if guard.is_none() {
+                    match spawn_sidecar(Arc::clone(&app_handle)) {
+                        Ok(s) => *guard = Some(s),
+                        Err(e) => {
+                            log_error(&app_handle, format!("{e}"));
+                            let _ = app_handle.emit("tts-error", format!("朗读服务启动失败：{e}"));
+                        }
+                    }
+                }
+            }
+
+            // ---- 启动即拉起独立抓取进程：让全局选区钩子从应用启动就激活 ----
+            {
+                let state = app_handle.state::<GrabberState>();
+                let mut guard = state.0.lock().unwrap();
+                if guard.is_none() {
+                    match spawn_grabber(Arc::clone(&app_handle)) {
+                        Ok(s) => *guard = Some(s),
+                        Err(e) => {
+                            log_error(&app_handle, format!("grabber spawn failed: {e}"));
+                        }
+                    }
+                }
+            }
+
+            // ---- watchdog：TTS sidecar 退出后自动重启，保证朗读服务稳定 ----
+            {
+                let app2 = Arc::clone(&app_handle);
+                thread::spawn(move || {
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(1500));
+                        let state = app2.state::<SidecarState>();
+                        let mut guard = state.0.lock().unwrap();
+                        let dead = match guard.as_ref() {
+                            Some((_c, exit_rx, _tx)) => exit_rx.try_recv() == Ok(true),
+                            None => true,
+                        };
+                        if dead {
+                            // 回收旧进程句柄，避免残留孤儿 python
+                            if let Some((mut child, _, _)) = guard.take() {
+                                let _ = child.kill();
+                                let _ = child.wait();
+                            }
+                            match spawn_sidecar(Arc::clone(&app2)) {
+                                Ok(s) => {
+                                    *guard = Some(s);
+                                    log_async(format!("[{}] watchdog respawned sidecar", std::process::id()));
+                                }
+                                Err(e) => {
+                                    log_error(&app2, format!("watchdog respawn failed: {e}"));
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
+            // ---- watchdog：抓取进程退出（原生崩溃）后自动重启，保证选字始终可用 ----
+            {
+                let app2 = Arc::clone(&app_handle);
+                thread::spawn(move || {
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(1500));
+                        let state = app2.state::<GrabberState>();
+                        let mut guard = state.0.lock().unwrap();
+                        let dead = match guard.as_ref() {
+                            Some((_c, exit_rx, _tx)) => exit_rx.try_recv() == Ok(true),
+                            None => true,
+                        };
+                        if dead {
+                            if let Some((mut child, _, _)) = guard.take() {
+                                let _ = child.kill();
+                                let _ = child.wait();
+                            }
+                            match spawn_grabber(Arc::clone(&app2)) {
+                                Ok(s) => {
+                                    *guard = Some(s);
+                                    log_async(format!("[{}] watchdog respawned grabber", std::process::id()));
+                                }
+                                Err(e) => {
+                                    log_error(&app2, format!("watchdog grabber respawn failed: {e}"));
+                                }
+                            }
+                        }
+                    }
                 });
             }
 
