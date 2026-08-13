@@ -41,12 +41,44 @@ def cursor_pos():
         return None
 
 
+# 剪贴板兜底冷却（秒）：防止对 UIA 失效的应用高频模拟 Ctrl+C 覆盖用户剪贴板。
+# 模块级状态，跨轮询共享；距离上次剪贴板兜底不足该值时直接跳过兜底。
+CLIP_COOLDOWN = 3.0
+_last_clip_attempt = {"t": 0.0}
+
+
+def _clipboard_fallback(auto):
+    """剪贴板兜底：模拟 Ctrl+C → 读剪贴板 → 还原原剪贴板。
+
+    带冷却时间，两次兜底之间至少间隔 CLIP_COOLDOWN 秒，避免反复模拟 Ctrl+C
+    覆盖用户剪贴板（用户已明确反感）。返回抓到的文本，否则返回 ''。
+    """
+    now = time.time()
+    if now - _last_clip_attempt["t"] < CLIP_COOLDOWN:
+        return ''
+    _last_clip_attempt["t"] = now
+    try:
+        old = auto.GetClipboardText()
+        auto.SendKeys('{Ctrl}c')
+        time.sleep(0.25)
+        text = auto.GetClipboardText()
+        if text and text != old:
+            try:
+                auto.SetClipboardText(old)
+            except Exception:
+                pass
+            return text
+    except Exception:
+        pass
+    return ''
+
+
 def read_selection():
     """读取当前前台控件的选中文字。
 
     优先用 UIA 全树遍历（深度 10）抓取选区，绝大多数应用可直接命中，
     避免频繁操作剪贴板；仅当 UIA 完全读不到时才回退到剪贴板方案
-    （模拟 Ctrl+C 复制→读剪贴板→还原），作为最后兜底。
+    （模拟 Ctrl+C 复制→读剪贴板→还原），且带冷却时间，作为最后兜底。
     """
     try:
         import uiautomation as auto
@@ -84,21 +116,8 @@ def read_selection():
         if best:
             return best
 
-        # 剪贴板兜底：模拟 Ctrl+C，读取复制内容，再还原原剪贴板
-        try:
-            old = auto.GetClipboardText()
-            auto.SendKeys('{Ctrl}c')
-            time.sleep(0.25)
-            text = auto.GetClipboardText()
-            if text and text != old:
-                try:
-                    auto.SetClipboardText(old)
-                except Exception:
-                    pass
-                return text
-        except Exception:
-            pass
-        return ''
+        # 剪贴板兜底（带冷却）：仅当 UIA 读不到时才走，且不频繁触发
+        return _clipboard_fallback(auto)
     except Exception:
         return ''
 
