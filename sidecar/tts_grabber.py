@@ -46,6 +46,9 @@ def cursor_pos():
 CLIP_COOLDOWN = 3.0
 _last_clip_attempt = {"t": 0.0}
 
+# 单次抓取最大字符数（放宽到 100000，约整本中篇/多章；分块按 2000 字切后顺序朗读）
+MAX_GRAB_CHARS = 100000
+
 
 def _clipboard_fallback(auto):
     """剪贴板兜底：模拟 Ctrl+C → 读剪贴板 → 还原原剪贴板。
@@ -167,7 +170,7 @@ def main():
         except Exception as e:
             dbg("read_selection error: %r" % (e,))
             continue
-        text = ' '.join(text.split())[:20000]
+        text = ' '.join(text.split())[:MAX_GRAB_CHARS]
         if len(text) < 2 or text == armed["last"]:
             if armed["on"]:
                 dbg("armed, selection len=%d (skip)" % len(text))
