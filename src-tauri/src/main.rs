@@ -283,6 +283,29 @@ fn toggle_grab(app: tauri::AppHandle, on: bool) {
     grabber_cmd(&app, if on { "arm" } else { "disarm" });
 }
 
+/// 把目标物理位置 (x, y) 夹紧到其所在显示器的工作区内，避免面板落到屏外。
+/// 返回夹紧后的 (x, y)；找不到显示器则原样返回。
+fn clamp_to_work_area(
+    app: &tauri::AppHandle,
+    x: i32,
+    y: i32,
+    win_w: u32,
+    win_h: u32,
+) -> (i32, i32) {
+    // 根据目标点找所在显示器；找不到则原样返回
+    let monitor = app.monitor_from_point(x as f64, y as f64).ok().flatten();
+    let Some(m) = monitor else { return (x, y) };
+    let pos = m.position();
+    let size = m.size();
+    let margin = 12;
+    // 工作区右/下边界 = 显示器位置 + 尺寸 - 面板尺寸 - 边距
+    let max_x = pos.x as i32 + size.width as i32 - win_w as i32 - margin;
+    let max_y = pos.y as i32 + size.height as i32 - win_h as i32 - margin;
+    let cx = x.max(pos.x as i32 + margin).min(max_x.max(pos.x as i32 + margin));
+    let cy = y.max(pos.y as i32 + margin).min(max_y.max(pos.y as i32 + margin));
+    (cx, cy)
+}
+
 /// 处理全局选区抓取：把面板移到选区旁并填充文本，切到交互态
 fn handle_grab(app: &tauri::AppHandle, text: &str, x: Option<i32>, y: Option<i32>) {
     log_async(format!("[{}] grab text ({} chars)", std::process::id(), text.chars().count()));
@@ -293,14 +316,13 @@ fn handle_grab(app: &tauri::AppHandle, text: &str, x: Option<i32>, y: Option<i32
         guard.0 = AppMode::Interact;
         guard.1 = true;
     }
-    // 移动面板到鼠标/选区位置（在鼠标下方一点，避免遮挡）
+    // 移动面板到鼠标/选区位置（在鼠标下方一点，避免遮挡），并收敛到屏幕内
     if let Some(p) = app.get_webview_window("panel") {
         let _ = p.show();
+        let win_size = p.inner_size().ok().unwrap_or(tauri::PhysicalSize::new(280, 400));
         if let (Some(px), Some(py)) = (x, y) {
-            let _ = p.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
-                px + 12,
-                py + 16,
-            )));
+            let (cx, cy) = clamp_to_work_area(app, px + 12, py + 16, win_size.width, win_size.height);
+            let _ = p.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(cx, cy)));
         }
     }
     // 通知前端填充文本
@@ -662,7 +684,9 @@ fn main() {
                     st.1 = false;
                 } else {
                     if let Ok(pos) = main.outer_position() {
-                        let _ = panel.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(pos.x + 260, pos.y + 20)));
+                        let win_size = panel.inner_size().ok().unwrap_or(tauri::PhysicalSize::new(280, 400));
+                        let (cx, cy) = clamp_to_work_area(&app, pos.x + 260, pos.y + 20, win_size.width, win_size.height);
+                        let _ = panel.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(cx, cy)));
                     }
                     let _ = panel.show();
                     let _ = panel.set_focus();
@@ -761,13 +785,14 @@ fn main() {
                     let mut st = app_state.0.lock().unwrap();
                     if !st.1 {
                         // 默认启动即弹出：面板靠主窗口右侧显示，切到交互态
-                        if let Some(main) = panel_ready_app_handle.get_webview_window("main") {
+                        if let (Some(main), Some(panel)) = (
+                            panel_ready_app_handle.get_webview_window("main"),
+                            panel_ready_app_handle.get_webview_window("panel"),
+                        ) {
                             if let Ok(pos) = main.outer_position() {
-                                let _ = panel_ready_app_handle
-                                    .get_webview_window("panel")
-                                    .map(|p| p.set_position(tauri::Position::Physical(
-                                        tauri::PhysicalPosition::new(pos.x + 260, pos.y + 20),
-                                    )));
+                                let win_size = panel.inner_size().ok().unwrap_or(tauri::PhysicalSize::new(280, 400));
+                                let (cx, cy) = clamp_to_work_area(&panel_ready_app_handle, pos.x + 260, pos.y + 20, win_size.width, win_size.height);
+                                let _ = panel.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(cx, cy)));
                             }
                         }
                         let _ = panel_ready_app_handle.get_webview_window("panel").and_then(|p| p.show().ok());
