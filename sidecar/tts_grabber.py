@@ -46,8 +46,8 @@ def cursor_pos():
 CLIP_COOLDOWN = 3.0
 _last_clip_attempt = {"t": 0.0}
 
-# 单次抓取最大字符数（放宽到 100000，约整本中篇/多章；分块按 2000 字切后顺序朗读）
-MAX_GRAB_CHARS = 100000
+# 单次抓取最大字符数（5万，约整章/多章；分块按 2000 字切后顺序朗读）
+MAX_GRAB_CHARS = 50000
 
 
 def _clipboard_fallback(auto):
