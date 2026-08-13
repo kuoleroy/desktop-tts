@@ -88,6 +88,20 @@ $("p-quit").addEventListener("click", () => {
 });
 
 whenTauriReady(() => {
+  // 面板拖拽移动：按住标题栏可拖动窗口（无边框窗口无系统标题栏）
+  const head = document.querySelector(".panel-head");
+  if (head) {
+    head.addEventListener("mousedown", (e) => {
+      // 避免在按钮上按下触发拖拽（返回观赏按钮）
+      if (e.target.closest("button")) return;
+      try {
+        window.__TAURI__.window.getCurrentWindow().startDragging();
+      } catch (err) {
+        showHint("拖动失败：" + (err && err.message || err), true);
+      }
+    });
+  }
+
   window.__TAURI__.event.listen("toggle-mode", (e) => {
     mode = e.payload;
     document.title = "Pet Panel [" + mode + "]";
