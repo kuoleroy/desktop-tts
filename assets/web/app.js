@@ -281,8 +281,13 @@ window.playAudioFrom = playAudioFrom;
 // ---- 长文本分块朗读队列：依次播放多个音频文件，播完自动下一个 ----
 let playQueue = [];
 let playingId = 0;
+let queuePaused = false;
 
 function playQueueItem(idx) {
+  if (queuePaused) {
+    // 已暂停：不再自动播下一块，保持当前音频（若存在）停在暂停态
+    return;
+  }
   if (!playQueue[idx]) {
     // 播完整个队列
     playQueue = [];
@@ -340,6 +345,7 @@ function playSequence(url, onDone) {
 // 停止队列（广播 idle）
 function stopQueue() {
   playingId++;
+  queuePaused = false;
   playQueue = [];
   if (audioSrc) {
     try { audioSrc.stop(); } catch (_) {}
@@ -351,6 +357,7 @@ function stopQueue() {
 
 function startQueue(paths) {
   stopQueue();
+  queuePaused = false;
   playQueue = paths.slice();
   playQueueItem(0);
 }
@@ -369,24 +376,41 @@ function stopAudio(silent) {
   if (audioCtx && audioCtx.state === "suspended") {
     audioCtx.resume().catch(() => {});
   }
-  stopQueue?.();
   if (!silent) broadcastPlayState("idle");
 }
 window.stopAudio = stopAudio;
 
-// 暂停 / 恢复播放
+// 暂停 / 恢复播放（队列感知：跨块保持暂停态）
 function pauseAudio() {
-  if (!audioCtx || !audioSrc) return;
+  queuePaused = true;
+  if (!audioCtx || !audioSrc) {
+    // 无当前音频但队列未播完 → 也要让面板进入暂停态
+    broadcastPlayState("paused");
+    return;
+  }
   if (audioCtx.state === "running") {
     audioCtx.suspend().then(() => broadcastPlayState("paused")).catch(() => {});
+  } else {
+    broadcastPlayState("paused");
   }
 }
 window.pauseAudio = pauseAudio;
 
 function resumeAudio() {
-  if (!audioCtx || !audioSrc) return;
+  queuePaused = false;
+  if (!audioCtx || !audioSrc) {
+    // 暂停发生在块间隙：恢复时若队列还有剩余块，继续播
+    if (playQueue.length) {
+      playQueueItem(0);
+    } else {
+      broadcastPlayState("idle");
+    }
+    return;
+  }
   if (audioCtx.state === "suspended") {
     audioCtx.resume().then(() => broadcastPlayState("playing")).catch(() => {});
+  } else {
+    broadcastPlayState("playing");
   }
 }
 window.resumeAudio = resumeAudio;
