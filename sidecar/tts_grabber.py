@@ -747,44 +747,12 @@ def main():
                 _cls = getattr(e0, "CurrentClassName", None) or "?"
             except Exception:
                 _cls = "?"
-            dbg("UIA event id=0x%X cls=%s" % (eventId, _cls))
-            if eventId != UIA_Text_TextSelectionChangedEventId:
-                return
-            if not armed["on"]:
-                # 诊断：区分「事件没触发」与「事件触发但抓取被关闭」
-                dbg("UIA 20014 received but disarmed, ignored")
-                return
-            if not seen_uia["hit"]:
-                seen_uia["hit"] = True
-                try:
-                    el0 = sender.QueryInterface(UIA.IUIAutomationElement)
-                    scls = getattr(el0, "CurrentClassName", None) or "?"
-                except Exception:
-                    scls = "?"
-                dbg("UIA 20014 selection event received (sender cls=%s)" % scls)
-            try:
-                el = sender.QueryInterface(UIA.IUIAutomationElement)
-            except Exception:
-                return
-            pending["element"] = el
-            pending["dirty"] = True
-            # 重启防抖定时器：连续事件只读一次。
-            # 注意：UIA 回调在系统线程执行，SetTimer 必须绑定主线程隐藏窗口
-            # (hwnd)，否则 WM_TIMER 投递到回调线程队列，主消息泵永远收不到。
-            user32 = ctypes.windll.user32
-            user32.SetTimer.restype = ctypes.c_void_p  # UINT_PTR
-            user32.SetTimer.argtypes = [
-                ctypes.wintypes.HWND, ctypes.wintypes.UINT,
-                ctypes.c_uint, ctypes.c_void_p]
-            user32.KillTimer.restype = ctypes.c_int
-            user32.KillTimer.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.UINT]
-            hw = hwnd_box["hwnd"]
-            if hw:
-                user32.KillTimer(hw, DEBOUNCE_ID)
-                user32.SetTimer(hw, DEBOUNCE_ID, DEBOUNCE_MS, None)
-            else:
-                # 隐藏窗口尚未创建（极早期）：直接消费本次选区
-                threading.Thread(target=_do_grab, args=("uia",), daemon=True).start()
+            # 自动抓取已停用（改为双击/拖选/Ctrl+A 主动触发）：20014 事件不再自动弹，
+            # 避免 opencode/Edge/记事本 Edit 控件在光标/聚焦变化时高频触发导致乱跳。
+            # 仅保留诊断日志（仅在调试期短暂开启，生产可注释）。
+            if False and eventId == UIA_Text_TextSelectionChangedEventId:
+                dbg("UIA event id=0x%X cls=%s" % (eventId, _cls))
+            return
 
     handler = MyHandler()  # 强引用，防 GC
     try:
@@ -1303,6 +1271,84 @@ def main():
                 _clipwatch_cmd_job()
 
     threading.Thread(target=_stdin_reader, daemon=True).start()
+
+    # ---- pynput 钩子（主动触发，老版本方式）：双击左键 / 拖动选中松开 / Ctrl+A
+    #      触发主动读取前台选区。不再自动监听 UIA 事件（避免光标/聚焦变化乱跳）。----
+    def _start_hooks():
+        try:
+            from pynput import mouse, keyboard
+        except Exception as e:
+            dbg("  [hooks] pynput import failed: %r" % e)
+            return
+        _last_click = [0.0, 0, 0]
+        _drag_start = [None]
+        _ctrl_down = [False]
+        _dbl_pending = [False]
+
+        def _do_trigger():
+            threading.Thread(target=_selread_job, daemon=True).start()
+
+        def _on_click(x, y, button, pressed):
+            try:
+                if getattr(button, "name", "") != "left":
+                    return
+                now = time.time()
+                if pressed:
+                    lx, ly, lt = _last_click
+                    # 双击判定（300ms 内、位移<6px）。不立即触发：双击选中的一行
+                    # 要等第二次「松开」才真正完成选择，按下时选区尚未形成会读到空。
+                    if now - lt < 0.3 and abs(x - lx) < 6 and abs(y - ly) < 6:
+                        _last_click[0] = 0.0
+                        _dbl_pending[0] = True
+                    else:
+                        _last_click[0], _last_click[1], _last_click[2] = now, x, y
+                    _drag_start[0] = (x, y)
+                else:
+                    # 双击松开：此时双击选中的一行已稳定，触发读取
+                    if _dbl_pending[0]:
+                        _dbl_pending[0] = False
+                        _do_trigger()
+                        return
+                    if _drag_start[0]:
+                        sx, sy = _drag_start[0]
+                        _drag_start[0] = None
+                        # 拖拽选中：位移>=8px 视为选区拖选，触发读取
+                        if max(abs(x - sx), abs(y - sy)) >= 8:
+                            _do_trigger()
+            except Exception as e:
+                dbg("  [hooks] on_click err: %r" % e)
+
+        def _on_key(key):
+            try:
+                from pynput import keyboard as kb
+                # 跟踪 Ctrl 状态；Ctrl+A（vk=65 且 Ctrl 按下）触发主动读取
+                if key in (kb.Key.ctrl_l, kb.Key.ctrl_r):
+                    _ctrl_down[0] = True
+                elif getattr(key, "vk", None) == 65 and _ctrl_down[0]:
+                    _do_trigger()
+            except Exception:
+                pass
+
+        def _on_key_up(key):
+            try:
+                from pynput import keyboard as kb
+                if key in (kb.Key.ctrl_l, kb.Key.ctrl_r):
+                    _ctrl_down[0] = False
+            except Exception:
+                pass
+
+        try:
+            m = mouse.Listener(on_click=_on_click)
+            m.daemon = True
+            m.start()
+            k = keyboard.Listener(on_press=_on_key, on_release=_on_key_up)
+            k.daemon = True
+            k.start()
+            dbg("  [hooks] pynput mouse/keyboard listener started")
+        except Exception as e:
+            dbg("  [hooks] listener start failed: %r" % e)
+
+    _start_hooks()
 
     # ---- 隐藏窗口（用于 WM_CLIPBOARDUPDATE 剪贴板通知）----
     WndProc = ctypes.WINFUNCTYPE(
