@@ -15,9 +15,14 @@ import asyncio
 import concurrent.futures
 import json
 import os
+import signal
 import sys
 import threading
 import time
+
+# 后台工作进程：生命周期由 Rust 管理（stdin 指令 + 看门狗），无需响应 Ctrl+C。
+# 忽略 SIGINT，避免终端 Ctrl+C 把进程杀掉。
+signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 CACHE = os.path.join(os.path.dirname(BASE), "tts_cache")

@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
+use std::os::windows::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -111,6 +112,9 @@ fn spawn_sidecar(app: Arc<tauri::AppHandle>) -> Result<(Child, std::sync::mpsc::
         .map_err(|e| format!("open stderr log {err_log:?}: {e}"))?;
     let mut child = Command::new(&py)
         .arg(&script)
+        // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP：脱离终端控制台进程组。
+        // 否则终端里的 Ctrl+C 会把 SIGINT 传给子进程 → Python KeyboardInterrupt 反复被杀。
+        .creation_flags(0x08000200)
         .current_dir(sidecar_dir())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -206,6 +210,9 @@ fn spawn_grabber(app: Arc<tauri::AppHandle>) -> Result<(Child, std::sync::mpsc::
         .map_err(|e| format!("open grabber stderr log {err_log:?}: {e}"))?;
     let mut child = Command::new(&py)
         .arg(&script)
+        // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP：脱离终端控制台进程组。
+        // 否则终端里的 Ctrl+C 会把 SIGINT 传给子进程 → Python KeyboardInterrupt 反复被杀。
+        .creation_flags(0x08000200)
         .current_dir(sidecar_dir())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -278,6 +285,52 @@ fn grabber_cmd(app: &tauri::AppHandle, cmd: &str) {
         log_async(format!("[grabber] {cmd} requested"));
     } else {
         log_async("[grabber] not running, cannot send cmd".to_string());
+    }
+}
+
+/// 向抓取进程发送带负载的命令（OCR rect 等）
+fn grabber_cmd_payload(app: &tauri::AppHandle, cmd: &str, payload: &str) {
+    let state = app.state::<GrabberState>();
+    let guard = state.0.lock().unwrap();
+    if let Some((_child, _exit_rx, cmd_tx)) = guard.as_ref() {
+        let _ = cmd_tx.send(CommandMessage { id: NEXT_ID.fetch_add(1, Ordering::Relaxed), cmd: cmd.into(), payload: payload.into() });
+        log_async(format!("[grabber] {cmd} payload={payload}"));
+    } else {
+        log_async("[grabber] not running, cannot send cmd".to_string());
+    }
+}
+
+/// 前端调用：对指定屏幕区域执行 OCR（全屏框选截图识别）
+#[tauri::command]
+fn ocr_rect(app: tauri::AppHandle, rect: String) {
+    grabber_cmd_payload(&app, "ocr", &rect);
+}
+
+/// 前端调用：点按钮主动读取前台窗口选中文本（可读长文本）
+#[tauri::command]
+fn selread(app: tauri::AppHandle) {
+    grabber_cmd(&app, "selread");
+}
+
+/// 前端调用：开启剪贴板监听窗口期（浏览器/notepad++/Edge 等无法 UIA 读取时，
+/// 用户手动 Ctrl+C 复制文本，脚本据此朗读）
+#[tauri::command]
+fn clipwatch(app: tauri::AppHandle) {
+    grabber_cmd(&app, "clipwatch");
+}
+
+/// 前端调用：显示全屏框选层（用户拖拽框选文字区域）
+#[tauri::command]
+fn show_crop(app: tauri::AppHandle) {
+    let _ = app.emit("hide-floater", ());
+    if let Some(crop) = app.get_webview_window("crop") {
+        let _ = crop.set_fullscreen(true);
+        let _ = crop.set_always_on_top(true);
+        let _ = crop.show();
+        let _ = crop.set_focus();
+        log_async(format!("[{}] crop window shown", std::process::id()));
+    } else {
+        log_async("crop window not found".to_string());
     }
 }
 
@@ -631,7 +684,7 @@ fn main() {
         .manage(GrabberState(Mutex::new(None)))
         .manage(AppState(Mutex::new((AppMode::Watch, false))))
         .invoke_handler(tauri::generate_handler![
-            read_text, stop_read, set_voice, set_rate, set_pitch, export_mp3, list_models, model_dir, quit, toggle_grab, show_panel, get_settings, toggle_click_through, get_click_through
+            read_text, stop_read, set_voice, set_rate, set_pitch, export_mp3, list_models, model_dir, quit, toggle_grab, show_panel, get_settings, toggle_click_through, get_click_through, ocr_rect, show_crop, selread, clipwatch
         ])
         .on_window_event(|window, event| {
             match event {
@@ -718,6 +771,13 @@ fn main() {
                 _panel_win.is_visible().unwrap_or(false),
                 _panel_win.inner_size().ok()
             ));
+
+            // ---- 全屏框选层：点击「框选截图」时全屏显示，用户拖拽框选区域 ----
+            if let Some(crop_win) = app.get_webview_window("crop") {
+                let _ = crop_win.set_fullscreen(true);
+                let _ = crop_win.hide();
+                log("crop window initialized (fullscreen, hidden)");
+            }
 
 log("windows created");
             log(&format!("AppHandle cloned, Arc count: {}", Arc::strong_count(&app_handle)));
@@ -940,6 +1000,7 @@ log("windows created");
                     match spawn_grabber(Arc::clone(&app_handle)) {
                         Ok(s) => {
                             // 启动即武装：全局任意位置选中文字即触发抓取（弹出悬浮框）
+                            // 记事本等应用事件稳定好用；浏览器/opencode 偶发误触在下方过滤
                             let _ = s.2.send(CommandMessage { id: 0, cmd: "arm".into(), payload: String::new() });
                             *guard = Some(s);
                         }
@@ -1001,10 +1062,9 @@ log("windows created");
                             }
                             match spawn_grabber(Arc::clone(&app2)) {
                                 Ok(s) => {
-                                    // 重启后保持武装：全局选中即弹悬浮框不中断
-                                    let _ = s.2.send(CommandMessage { id: 0, cmd: "arm".into(), payload: String::new() });
+                                    // 重启后保持非武装（同启动逻辑）：靠手动选中+点朗读触发
                                     *guard = Some(s);
-                                    log_async(format!("[{}] watchdog respawned grabber (re-armed)", std::process::id()));
+                                    log_async(format!("[{}] watchdog respawned grabber", std::process::id()));
                                 }
                                 Err(e) => {
                                     log_error(&app2, format!("watchdog grabber respawn failed: {e}"));

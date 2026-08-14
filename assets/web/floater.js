@@ -40,10 +40,20 @@ whenTauriReady(() => {
     setVoice(String(e.payload || ""));
   });
 
-  // 朗读选中文字
-  $("btn-read").addEventListener("click", () => {
-    if (!currentText) return;
-    window.__TAURI__.core.invoke("read_text", { text: currentText }).catch(() => {});
+  // 朗读选中文字：点「朗读」→ 主动读取前台窗口选中文本(可读长文本)→ 朗读。
+  // 若应用无法 UIA 读取(浏览器/notepad++/Edge)，同步开启剪贴板监听窗口期，
+  // 用户在几秒内手动 Ctrl+C 复制文本，脚本据此朗读。
+  $("btn-read").addEventListener("click", async () => {
+    try {
+      await window.__TAURI__.core.invoke("selread");
+      // 同步开启剪贴板监听：UIA 读不到时兜底读用户复制的文本
+      await window.__TAURI__.core.invoke("clipwatch").catch(() => {});
+      // 抓取结果通过 floater-text 事件回填，短暂等待后朗读
+      await new Promise(r => setTimeout(r, 400));
+      if (currentText) {
+        await window.__TAURI__.core.invoke("read_text", { text: currentText }).catch(() => {});
+      }
+    } catch (_) {}
   });
 
   // 复制选中文字
@@ -61,6 +71,19 @@ whenTauriReady(() => {
       await window.__TAURI__.core.invoke("show_panel");
       await window.__TAURI__.window.getCurrentWindow().hide();
     } catch (_) {}
+  });
+
+  // 框选截图：呼出全屏框选层，拖拽框选文字区域后自动 OCR
+  $("btn-crop").addEventListener("click", async () => {
+    try {
+      await window.__TAURI__.window.getCurrentWindow().hide();
+      await window.__TAURI__.core.invoke("show_crop");
+    } catch (_) {}
+  });
+
+  // 框选层显示时隐藏本窗口（兜底）
+  window.__TAURI__.event.listen("hide-floater", () => {
+    try { window.__TAURI__.window.getCurrentWindow().hide(); } catch (_) {}
   });
 
   // 启动时读取当前音色显示
