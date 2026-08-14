@@ -496,6 +496,27 @@ def _send_ctrl_c(mode="vk", target_hwnd=0):
         inp.u.ki.dwExtraInfo = None
         return inp
 
+    # keybd_event 模式：不走 SendInput（SendInput 返回 4/4 但部分 Chromium 应用
+    # 仍不响应模拟复制），直接用 keybd_event 模拟真实按键，能穿透 Edge/浏览器。
+    # 仅由 _auto_copy_fallback 在 SendInput 无结果时调用，且伴随完整剪贴板备份还原。
+    if mode == "keybd":
+        try:
+            user32.keybd_event.restype = ctypes.c_void_p
+            user32.keybd_event.argtypes = [
+                ctypes.c_ubyte, ctypes.c_ubyte, ctypes.c_uint, ctypes.c_void_p]
+            user32.keybd_event(VK_CONTROL, 0, 0, 0)
+            time.sleep(0.01)
+            user32.keybd_event(VK_C, 0, 0, 0)
+            time.sleep(0.01)
+            user32.keybd_event(VK_C, 0, KEYEVENTF_KEYUP, 0)
+            time.sleep(0.01)
+            user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+            dbg("  [send] keybd_event Ctrl+C sent")
+            return True
+        except Exception as e:
+            dbg("  [send] keybd_event raised: %r" % e)
+            return False
+
     sent = 0
     try:
         user32.SendInput.restype = ctypes.c_uint
@@ -961,8 +982,10 @@ def main():
             before = _read_clipboard_text()
             backup = _backup_clipboard()  # 完整备份所有格式（文本/图片/文件等）
             text = ''
-            # 第一轮：VK 批处理（记事本已验证有效）；无结果时第二轮：扫描码+间隔
-            for mode in ("vk", "scan"):
+            # 第一轮：VK 批处理（记事本已验证有效）；第二轮：扫描码+间隔；
+            # 第三轮：keybd_event（SendInput 对部分 Chromium 应用返回成功却仍不复制，
+            # keybd_event 模拟真实按键可穿透 Edge/浏览器）。
+            for mode in ("vk", "scan", "keybd"):
                 if text:
                     break
                 if not _send_ctrl_c(mode, target_hwnd=target):
