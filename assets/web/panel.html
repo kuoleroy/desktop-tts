@@ -150,6 +150,7 @@ html, body {
 <body>
 <div id="panel">
   <div class="panel-body">
+    <div id="panel-hint" style="font-size:11px;color:#666;padding:4px 2px;min-height:16px;text-align:center;"></div>
     <div class="panel-row">
       <textarea id="ptext" rows="4" placeholder="输入要朗读 / 导出的文本...">你好，我是桌面小精灵。选中文字，我就能帮你朗读出来。</textarea>
     </div>
@@ -209,6 +210,7 @@ html, body {
     <div style="font-size:13px;font-weight:600;color:#333;margin-bottom:8px;">管理跳过应用</div>
     <div id="skip-modal-list" style="flex:1;overflow-y:auto;font-size:12px;color:#666;margin-bottom:8px;min-height:40px;"></div>
     <div class="panel-row" style="gap:6px;margin:0;">
+      <button class="p-btn" id="p-skip-modal-pick" style="font-size:11px;padding:6px 4px;">+ 选取窗口</button>
       <button class="p-btn" id="p-skip-modal-close" style="font-size:11px;padding:6px 4px;">关闭</button>
       <button class="p-btn danger" id="p-skip-modal-clear" style="font-size:11px;padding:6px 4px;">释放全部</button>
     </div>
