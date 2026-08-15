@@ -622,6 +622,135 @@ fn quit(app: tauri::AppHandle) {
     app.exit(0);
 }
 
+// ---- 跳过注入应用管理（skip_apps.json）----
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+struct SkipConfig {
+    skip_window_classes: Vec<String>,
+    skip_exe_names: Vec<String>,
+}
+
+fn skip_config_path() -> std::path::PathBuf {
+    sidecar_dir().join("skip_apps.json")
+}
+
+fn read_skip_config() -> SkipConfig {
+    let path = skip_config_path();
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn write_skip_config(config: &SkipConfig) {
+    let path = skip_config_path();
+    if let Ok(json) = serde_json::to_string_pretty(config) {
+        let _ = std::fs::write(&path, &json);
+    }
+}
+
+/// 通知 grabber 重载跳过配置
+fn notify_grabber_reload_skip(app: &tauri::AppHandle) {
+    let state = app.state::<GrabberState>();
+    let guard = state.0.lock().unwrap();
+    if let Some((_child, _exit_rx, cmd_tx)) = guard.as_ref() {
+        let _ = cmd_tx.send(CommandMessage {
+            id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            cmd: "reload_skip".into(),
+            payload: String::new(),
+        });
+    }
+}
+
+#[tauri::command]
+fn get_skip_apps() -> SkipConfig {
+    read_skip_config()
+}
+
+#[tauri::command]
+fn add_skip_app(app: tauri::AppHandle, app_type: String, name: String) {
+    let mut config = read_skip_config();
+    match app_type.as_str() {
+        "class" => {
+            if !config.skip_window_classes.contains(&name) {
+                config.skip_window_classes.push(name);
+            }
+        }
+        "exe" => {
+            if !config.skip_exe_names.contains(&name) {
+                config.skip_exe_names.push(name.to_lowercase());
+            }
+        }
+        _ => return,
+    }
+    write_skip_config(&config);
+    notify_grabber_reload_skip(&app);
+}
+
+#[tauri::command]
+fn remove_skip_app(app: tauri::AppHandle, app_type: String, name: String) {
+    let mut config = read_skip_config();
+    match app_type.as_str() {
+        "class" => config.skip_window_classes.retain(|c| c != &name),
+        "exe" => config.skip_exe_names.retain(|e| e != &name.to_lowercase()),
+        _ => return,
+    }
+    write_skip_config(&config);
+    notify_grabber_reload_skip(&app);
+}
+
+#[tauri::command]
+fn clear_skip_apps(app: tauri::AppHandle) {
+    write_skip_config(&SkipConfig::default());
+    notify_grabber_reload_skip(&app);
+}
+
+#[tauri::command]
+fn get_fg_window_info() -> serde_json::Value {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::OpenProcess;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId};
+
+    let mut class = String::new();
+    let mut exe = String::new();
+
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd != 0 {
+            // 获取窗口类名
+            let mut buf = [0u16; 256];
+            let len = GetClassNameW(hwnd, buf.as_mut_ptr(), 256);
+            if len > 0 {
+                class = String::from_utf16_lossy(&buf[..len as usize]);
+            }
+
+            // 获取进程 exe 名
+            let mut pid: u32 = 0;
+            let _ = GetWindowThreadProcessId(hwnd, &mut pid);
+            if pid != 0 {
+                let h = OpenProcess(0x1000, 0, pid); // PROCESS_QUERY_LIMITED_INFORMATION
+                if h != 0 {
+                    let mut exe_buf = [0u16; 1024];
+                    let mut size = 1024u32;
+                    if windows_sys::Win32::System::Threading::QueryFullProcessImageNameW(h, 0, exe_buf.as_mut_ptr(), &mut size) != 0 {
+                        let path = String::from_utf16_lossy(&exe_buf[..size as usize]);
+                        // 只取文件名
+                        if let Some(base) = std::path::Path::new(&path).file_name() {
+                            exe = base.to_string_lossy().to_lowercase();
+                        }
+                    }
+                    CloseHandle(h);
+                }
+            }
+        }
+    }
+
+    serde_json::json!({
+        "class": class,
+        "exe": exe
+    })
+}
+
 fn main() {
     // ---- 崩溃捕获：panic 时同步写入 diag.log（防 abort 前丢日志）----
     {
@@ -684,7 +813,8 @@ fn main() {
         .manage(GrabberState(Mutex::new(None)))
         .manage(AppState(Mutex::new((AppMode::Watch, false))))
         .invoke_handler(tauri::generate_handler![
-            read_text, stop_read, set_voice, set_rate, set_pitch, export_mp3, list_models, model_dir, quit, toggle_grab, show_panel, get_settings, toggle_click_through, get_click_through, ocr_rect, show_crop, selread, clipwatch
+            read_text, stop_read, set_voice, set_rate, set_pitch, export_mp3, list_models, model_dir, quit, toggle_grab, show_panel, get_settings, toggle_click_through, get_click_through, ocr_rect, show_crop, selread, clipwatch,
+            get_skip_apps, add_skip_app, remove_skip_app, clear_skip_apps, get_fg_window_info
         ])
         .on_window_event(|window, event| {
             match event {

@@ -189,9 +189,29 @@ html, body {
         <option value="high">偏高</option>
       </select></label>
     </div>
+    <div style="border-top:1px solid #eee;padding:6px 2px;margin-top:4px;">
+      <div style="font-size:11px;color:#999;margin-bottom:4px;">跳过注入的应用</div>
+      <div id="skip-list" style="font-size:11px;color:#666;margin-bottom:6px;max-height:80px;overflow-y:auto;"></div>
+      <div class="panel-row" style="gap:4px;margin:0;">
+        <button class="p-btn" id="p-skip-manage" style="font-size:11px;padding:6px 4px;">管理</button>
+        <button class="p-btn" id="p-skip-refresh" style="font-size:11px;padding:6px 4px;">刷新</button>
+      </div>
+    </div>
   </div>
   <div class="panel-foot">
     <button class="p-btn danger" id="p-quit">退出</button>
+  </div>
+</div>
+
+<!-- 跳过管理弹窗 -->
+<div id="skip-modal" style="display:none;position:fixed;inset:0;z-index:999;background:rgba(0,0,0,0.3);align-items:center;justify-content:center;font-family:Microsoft YaHei,PingFang SC,sans-serif;">
+  <div style="background:#fff;border-radius:12px;padding:14px;width:260px;max-height:300px;box-shadow:0 8px 24px rgba(0,0,0,0.25);display:flex;flex-direction:column;">
+    <div style="font-size:13px;font-weight:600;color:#333;margin-bottom:8px;">管理跳过应用</div>
+    <div id="skip-modal-list" style="flex:1;overflow-y:auto;font-size:12px;color:#666;margin-bottom:8px;min-height:40px;"></div>
+    <div class="panel-row" style="gap:6px;margin:0;">
+      <button class="p-btn" id="p-skip-modal-close" style="font-size:11px;padding:6px 4px;">关闭</button>
+      <button class="p-btn danger" id="p-skip-modal-clear" style="font-size:11px;padding:6px 4px;">释放全部</button>
+    </div>
   </div>
 </div>
 <script>

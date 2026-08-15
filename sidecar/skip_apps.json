@@ -1,0 +1,7 @@
+{
+  "skip_window_classes": [
+    "ConsoleWindowClass",
+    "CASCADIA_HOSTING_WINDOW_CLASS"
+  ],
+  "skip_exe_names": []
+}

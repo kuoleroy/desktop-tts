@@ -58,6 +58,28 @@ SHUTDOWN_ID = 2  # 单实例接管轮询定时器 id
 
 COINIT_APARTMENTTHREADED = 0x2
 
+# ---- 跳过注入配置（skip_apps.json）----
+SKIP_CONFIG = {"skip_window_classes": [], "skip_exe_names": []}
+
+def _load_skip_config():
+    """从 skip_apps.json 加载跳过列表，供 _is_console_foreground 使用。"""
+    try:
+        import os
+        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skip_apps.json")
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        SKIP_CONFIG["skip_window_classes"] = data.get("skip_window_classes", [])
+        SKIP_CONFIG["skip_exe_names"] = data.get("skip_exe_names", [])
+        dbg("skip config loaded: classes=%s exes=%s" % (
+            SKIP_CONFIG["skip_window_classes"], SKIP_CONFIG["skip_exe_names"]))
+    except Exception as e:
+        dbg("skip config load failed: %r, using defaults" % e)
+        SKIP_CONFIG["skip_window_classes"] = ["ConsoleWindowClass", "CASCADIA_HOSTING_WINDOW_CLASS"]
+        SKIP_CONFIG["skip_exe_names"] = []
+
+# 启动时加载一次
+_load_skip_config()
+
 
 _OUT_LOCK = threading.Lock()
 
@@ -234,18 +256,37 @@ def _fg_class():
     except Exception:
         return ''
 
+def _fg_process_exe(hwnd):
+    """根据窗口句柄获取进程 exe 文件名（小写，不含路径）。失败返回空字符串。"""
+    try:
+        kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.windll.user32
+        pid = ctypes.c_ulong()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if not pid.value:
+            return ""
+        h = kernel32.OpenProcess(0x1000, False, pid.value)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return ""
+        try:
+            buf = ctypes.create_unicode_buffer(1024)
+            sz = ctypes.c_ulong(1024)
+            if kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(sz)):
+                path = buf.value
+                base = path.rsplit("\\", 1)[-1] if "\\" in path else path
+                return base.lower()
+        finally:
+            kernel32.CloseHandle(h)
+    except Exception:
+        pass
+    return ""
+
+
 def _is_console_foreground():
-    """前台是否真正的「纯控制台」窗口（仅原生 cmd.exe 的 ConsoleWindowClass）。
+    """前台窗口是否匹配跳过注入列表（skip_apps.json）。
 
-    终端里 Ctrl+C 是 SIGINT（中断运行中的程序），且输出刷新会持续触发 20014
-    → 必须跳过注入，避免「键盘一直 Ctrl+C」。
-
-    注意：此判断刻意「收紧」——只对 Windows 原生控制台窗口（ConsoleWindowClass，
-    即旧式 cmd.exe/conhost）返回 True。其余窗口（含 Windows Terminal 的宿主
-    CASCADIA_HOSTING_WINDOW_CLASS、各种嵌入 TermControl 的客户端）一律不跳过，
-    以扩大 Ctrl+C 注入覆盖面（浏览器/Electron/客户端等 UIA 读不到选区的应用
-    都能靠注入复制抓到）。Ctrl+C 注入本身受 _send_ctrl_c 的 SendInput 保护，
-    且只在已选文字时触发，不会无限刷键。
+    跳过列表中的窗口不注入 Ctrl+C，避免终端里 Ctrl+C 变成 SIGINT 杀掉进程。
+    匹配规则：窗口类名或 exe 文件名（小写）任一匹配即跳过。
     """
     try:
         user32 = ctypes.windll.user32
@@ -259,8 +300,14 @@ def _is_console_foreground():
         cls = ctypes.create_unicode_buffer(256)
         user32.GetClassNameW(h, cls, 256)
         c = cls.value
-        # 仅原生控制台才跳过；其余一律放行，扩大抓取覆盖面
-        return c == "ConsoleWindowClass"
+        # 检查是否匹配跳过列表中的窗口类名
+        if c in SKIP_CONFIG.get("skip_window_classes", []):
+            return True
+        # 检查是否匹配跳过列表中的 exe 名
+        exe = _fg_process_exe(h)
+        if exe and exe in SKIP_CONFIG.get("skip_exe_names", []):
+            return True
+        return False
     except Exception:
         return True  # 取不到前台信息时保守跳过注入
 
@@ -1269,6 +1316,10 @@ def main():
                 # 开启剪贴板监听窗口期：用户在无法 UIA 读取的应用里手动 Ctrl+C 复制
                 dbg("received clipwatch cmd")
                 _clipwatch_cmd_job()
+            elif cmd == "reload_skip":
+                # 面板修改跳过列表后，通知 grabber 热重载配置
+                dbg("received reload_skip cmd")
+                _load_skip_config()
 
     threading.Thread(target=_stdin_reader, daemon=True).start()
 
