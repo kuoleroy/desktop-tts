@@ -33,3 +33,4 @@ sidecar/test_interrupt.py
 # ---- Tauri 构建产物 ----
 src-tauri/target/
 src-tauri/gen/schemas/
+.vs/

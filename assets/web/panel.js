@@ -193,7 +193,7 @@ whenTauriReady(() => {
   // 启动时读取持久化配置并同步下拉框（音色/语速/语调）
   TTS.getSettings().then((s) => {
     if (!s) return;
-    if (s.voice) { updateVoiceBtn(s.voice); }
+    if (s.voice && $("sel-voice")) $("sel-voice").value = s.voice;
     if (s.rate != null && $("sel-rate")) $("sel-rate").value = String(s.rate);
     if (s.pitch && $("sel-pitch")) $("sel-pitch").value = s.pitch;
   });
@@ -271,49 +271,8 @@ $("p-grab").addEventListener("click", async () => {
   }
 });
 
-// ---- 自定义音色下拉框 ----
-const VOICE_SHORT_NAMES = {
-  "zh-CN-XiaoxiaoNeural": "晓晓",
-  "zh-CN-YunxiNeural": "云希",
-  "zh-CN-YunyangNeural": "云扬",
-  "zh-CN-XiaoyiNeural": "晓伊",
-  "zh-CN-YunjianNeural": "云健",
-  "local:Microsoft Xiaoxiao (Natural)": "晓晓·本地",
-  "local:Microsoft Yunxi (Natural)": "云希·本地",
-};
-
-function updateVoiceBtn(value) {
-  const btn = $("#voice-btn-text");
-  if (btn) btn.textContent = VOICE_SHORT_NAMES[value] || "晓晓";
-  const sel = $("sel-voice");
-  if (sel) sel.value = value;
-}
-
-// 切换下拉框显隐
-$("voice-btn").addEventListener("click", (e) => {
-  e.stopPropagation();
-  const dd = $("#voice-dropdown");
-  dd.style.display = dd.style.display === "none" ? "block" : "none";
-});
-
-// 点击选项
-document.querySelectorAll(".voice-opt").forEach((opt) => {
-  opt.addEventListener("click", () => {
-    const val = opt.dataset.value;
-    updateVoiceBtn(val);
-    $("#voice-dropdown").style.display = "none";
-    TTS.voice(val);
-  });
-  // 悬停高亮
-  opt.addEventListener("mouseenter", () => { opt.style.background = "#f0f2f5"; });
-  opt.addEventListener("mouseleave", () => { opt.style.background = ""; });
-});
-
-// 点击外部关闭下拉框
-document.addEventListener("click", () => {
-  const dd = $("#voice-dropdown");
-  if (dd) dd.style.display = "none";
-});
+// 音色选择
+$("sel-voice").addEventListener("change", (e) => TTS.voice(e.target.value));
 
 $("sel-rate").addEventListener("change", (e) => TTS.rate(parseInt(e.target.value, 10)));
 $("sel-pitch").addEventListener("change", (e) => TTS.pitch(e.target.value));

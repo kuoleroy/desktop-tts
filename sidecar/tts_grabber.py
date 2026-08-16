@@ -77,10 +77,6 @@ def _load_skip_config():
         SKIP_CONFIG["skip_window_classes"] = ["ConsoleWindowClass", "CASCADIA_HOSTING_WINDOW_CLASS"]
         SKIP_CONFIG["skip_exe_names"] = []
 
-# 启动时加载一次
-_load_skip_config()
-
-
 _OUT_LOCK = threading.Lock()
 
 
@@ -90,6 +86,9 @@ def dbg(msg):
         sys.stderr.flush()
     except Exception:
         pass
+
+# 启动时加载一次（必须在 dbg() 定义之后）
+_load_skip_config()
 
 
 def out(obj):
@@ -282,34 +281,38 @@ def _fg_process_exe(hwnd):
     return ""
 
 
-def _is_console_foreground():
-    """前台窗口是否匹配跳过注入列表（skip_apps.json）。
+def _is_skip_hwnd(hwnd):
+    """检查指定窗口是否匹配跳过注入列表（skip_apps.json）。
 
     跳过列表中的窗口不注入 Ctrl+C，避免终端里 Ctrl+C 变成 SIGINT 杀掉进程。
-    匹配规则：窗口类名或 exe 文件名（小写）任一匹配即跳过。
+    匹配规则：窗口类名或 exe 文件名任一匹配即跳过。
     """
+    if not hwnd:
+        return True
     try:
         user32 = ctypes.windll.user32
-        user32.GetForegroundWindow.restype = ctypes.wintypes.HWND
-        user32.GetForegroundWindow.argtypes = []
         user32.GetClassNameW.restype = ctypes.c_int
         user32.GetClassNameW.argtypes = [ctypes.wintypes.HWND, ctypes.c_wchar_p, ctypes.c_int]
-        h = user32.GetForegroundWindow()
-        if not h:
-            return True
         cls = ctypes.create_unicode_buffer(256)
-        user32.GetClassNameW(h, cls, 256)
+        user32.GetClassNameW(hwnd, cls, 256)
         c = cls.value
-        # 检查是否匹配跳过列表中的窗口类名
         if c in SKIP_CONFIG.get("skip_window_classes", []):
             return True
-        # 检查是否匹配跳过列表中的 exe 名
-        exe = _fg_process_exe(h)
+        exe = _fg_process_exe(hwnd)
         if exe and exe in SKIP_CONFIG.get("skip_exe_names", []):
             return True
         return False
     except Exception:
-        return True  # 取不到前台信息时保守跳过注入
+        return True  # 取不到信息时保守跳过注入
+
+
+def _is_console_foreground():
+    """前台窗口是否匹配跳过注入列表。"""
+    try:
+        h = ctypes.windll.user32.GetForegroundWindow()
+        return _is_skip_hwnd(h)
+    except Exception:
+        return True
 
 
 def _elevation_info():
@@ -516,6 +519,11 @@ def _send_ctrl_c(mode="vk", target_hwnd=0):
     if target_hwnd and not _is_console_foreground():
         if _focus_window(target_hwnd):
             time.sleep(0.05)
+            # 聚焦后二次检查：目标窗口可能是个终端/控制台（此时已变为前台），
+            # 注入 Ctrl+C 会变成 SIGINT 杀掉 dev 进程。
+            if _is_console_foreground():
+                dbg("  [send] aborted: target is console after focus (avoid Ctrl+C/SIGINT)")
+                return False
     # 诊断：注入前记录前台窗口 + 双方完整性级别（UIPI 会静默拦截向更高级别窗口的注入）
     dbg("  [send] %s | %s" % (_fg_window_info(), _elevation_info()))
 
@@ -763,6 +771,32 @@ def main():
     # 仅记录一个截止时间，过期即停；用 last 去重自身备份/还原的触发。
     clipwatch = {"until": 0.0, "last_clip": ""}
 
+    # ---- 父进程监控：Rust 进程死后自动退出，避免终端 Ctrl+C 杀不掉 grabber ----
+    _ppid = None
+    for i, a in enumerate(sys.argv):
+        if a == "--ppid" and i + 1 < len(sys.argv):
+            _ppid = int(sys.argv[i + 1])
+            break
+    if _ppid:
+        _ph = ctypes.windll.kernel32.OpenProcess(0x00100000 | 0x100000, False, _ppid)  # SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION
+        if _ph:
+            def _parent_watchdog(ph, ppid):
+                """后台线程：每 2 秒检查父进程是否存活，死了就退出 grabber。"""
+                k32 = ctypes.windll.kernel32
+                k32.WaitForSingleObject.restype = ctypes.c_uint
+                k32.WaitForSingleObject.argtypes = [ctypes.wintypes.HANDLE, ctypes.c_uint]
+                while True:
+                    # 父进程退出时 WaitForSingleObject 立即返回 WAIT_OBJECT_0
+                    if k32.WaitForSingleObject(ph, 2000) == 0:  # WAIT_OBJECT_0
+                        dbg("parent process (pid=%d) died, exiting grabber" % ppid)
+                        k32.CloseHandle(ph)
+                        ctypes.windll.user32.PostQuitMessage(0)
+                        return
+            threading.Thread(target=_parent_watchdog, args=(_ph, _ppid), daemon=True).start()
+            dbg("parent watchdog started (ppid=%d)" % _ppid)
+        else:
+            dbg("parent watchdog: OpenProcess failed for pid=%d" % (_ppid or 0))
+
     # ---- STA 主线程 + UIA 事件注册（必须在主线程，事件依赖其消息泵）----
     ctypes.windll.ole32.CoInitializeEx(None, COINIT_APARTMENTTHREADED)
 
@@ -788,17 +822,17 @@ def main():
         _com_interfaces_ = [IUIAutomationEventHandler]
 
         def HandleAutomationEvent(self, sender, eventId):
-            # 诊断：记录所有流入的 UIA 事件（不限 20014），排查真实运行时事件是否到达
+            if eventId != UIA_Text_TextSelectionChangedEventId:
+                return
             try:
                 e0 = sender.QueryInterface(UIA.IUIAutomationElement)
-                _cls = getattr(e0, "CurrentClassName", None) or "?"
             except Exception:
-                _cls = "?"
-            # 自动抓取已停用（改为双击/拖选/Ctrl+A 主动触发）：20014 事件不再自动弹，
-            # 避免 opencode/Edge/记事本 Edit 控件在光标/聚焦变化时高频触发导致乱跳。
-            # 仅保留诊断日志（仅在调试期短暂开启，生产可注释）。
-            if False and eventId == UIA_Text_TextSelectionChangedEventId:
-                dbg("UIA event id=0x%X cls=%s" % (eventId, _cls))
+                return
+            # 标记待处理 + 设置防抖定时器（350ms），由主线程消息泵消费
+            pending["element"] = e0
+            pending["dirty"] = True
+            if hwnd_box["hwnd"]:
+                ctypes.windll.user32.SetTimer(hwnd_box["hwnd"], DEBOUNCE_ID, DEBOUNCE_MS, None)
             return
 
     handler = MyHandler()  # 强引用，防 GC
@@ -991,6 +1025,10 @@ def main():
         target = _root_window_at(tx, ty) if (tx or ty) else 0
         if target:
             dbg("  [autocopy] target hwnd=0x%X (fg=%s)" % (target, _fg_window_info()))
+            # 目标窗口也在跳过列表中（如终端/控制台）→ 不注入
+            if _is_skip_hwnd(target):
+                dbg("  [autocopy] skipped (target is skip window)")
+                return ''
         auto_copy["busy"] = True
         auto_copy["last"] = now
         try:
@@ -1176,13 +1214,15 @@ def main():
                     text = _read_from_element(foc, "focus")
                 except Exception as e:
                     dbg("  [focus] GetFocusedElement failed: %r" % e)
-            if not text:
-                # 兜底：自动模拟 Ctrl+C 读剪贴板（读取后完整还原，不打扰用户）
+            if not text and source != "uia":
+                # 兜底：自动模拟 Ctrl+C 读剪贴板（读取后完整还原，不打扰用户）。
+                # 仅对鼠标操作（双击/拖动选中）和显式命令触发，避免 UIA 事件
+                # 误触（系统窗口光标移动/渲染刷新也会发 20014 事件，无选区时
+                # 注入 Ctrl+C 会杀掉终端进程）。
                 text = _auto_copy_fallback(el)
-            if not text:
+            if not text and source != "uia":
                 # 最终兜底：OCR 截取选区包围盒识别（注入被 UIPI 拦截时仍能抓）。
-                # 必须放后台线程：RapidOCR 首次加载 onnx 模型 + 推理耗时较长，
-                # 若在主线程跑会卡死消息泵（窗口无响应、后续事件全丢）。
+                # 同样只在鼠标/命令触发时执行，避免 UIA 误触浪费 CPU。
                 rect = _element_rect(el)
                 # 优化：当元素 rect 异常巨大（≈整个窗口而非精确选区，常见于
                 # Chromium/Electron 应用不暴露选区边界）时，改为以鼠标位置为中心

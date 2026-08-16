@@ -202,6 +202,7 @@ fn grabber_script() -> std::path::PathBuf {
 fn spawn_grabber(app: Arc<tauri::AppHandle>) -> Result<(Child, std::sync::mpsc::Receiver<bool>, mpsc::Sender<CommandMessage>), String> {
     let py = std::env::var("PYTHON").unwrap_or_else(|_| "python".into());
     let script = grabber_script();
+    let ppid = std::process::id();
     let err_log = sidecar_dir().join("grabber_stderr.log");
     let stderr_file = std::fs::OpenOptions::new()
         .create(true)
@@ -210,6 +211,8 @@ fn spawn_grabber(app: Arc<tauri::AppHandle>) -> Result<(Child, std::sync::mpsc::
         .map_err(|e| format!("open grabber stderr log {err_log:?}: {e}"))?;
     let mut child = Command::new(&py)
         .arg(&script)
+        .arg("--ppid")
+        .arg(ppid.to_string())
         // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP：脱离终端控制台进程组。
         // 否则终端里的 Ctrl+C 会把 SIGINT 传给子进程 → Python KeyboardInterrupt 反复被杀。
         .creation_flags(0x08000200)
@@ -1192,9 +1195,10 @@ log("windows created");
                             }
                             match spawn_grabber(Arc::clone(&app2)) {
                                 Ok(s) => {
-                                    // 重启后保持非武装（同启动逻辑）：靠手动选中+点朗读触发
+                                    // 重启后自动武装，保持"选中即弹悬浮框"功能
+                                    let _ = s.2.send(CommandMessage { id: 0, cmd: "arm".into(), payload: String::new() });
                                     *guard = Some(s);
-                                    log_async(format!("[{}] watchdog respawned grabber", std::process::id()));
+                                    log_async(format!("[{}] watchdog respawned grabber (armed)", std::process::id()));
                                 }
                                 Err(e) => {
                                     log_error(&app2, format!("watchdog grabber respawn failed: {e}"));

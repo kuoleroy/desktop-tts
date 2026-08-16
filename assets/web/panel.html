@@ -168,30 +168,15 @@ html, body {
       <span class="prog-label" id="prog-label"></span>
     </div>
     <div class="panel-section" style="display:flex;gap:6px;align-items:center;">
-      <div id="voice-custom" style="flex:1;position:relative;font-size:12px;">
-        <button id="voice-btn" style="width:100%;padding:3px 6px;border:1px solid #ddd;border-radius:6px;background:#fff;text-align:left;cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:space-between;">
-          <span id="voice-btn-text">晓晓</span>
-          <span style="font-size:10px;color:#999;">&#9660;</span>
-        </button>
-        <div id="voice-dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:10;background:#fff;border:1px solid #ddd;border-radius:6px;max-height:180px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,0.15);">
-          <div class="voice-opt" data-value="zh-CN-XiaoxiaoNeural" style="padding:4px 8px;cursor:pointer;border-bottom:1px solid #f5f5f5;">晓晓（自然女声·在线）</div>
-          <div class="voice-opt" data-value="zh-CN-YunxiNeural" style="padding:4px 8px;cursor:pointer;border-bottom:1px solid #f5f5f5;">云希（阳光男声·在线）</div>
-          <div class="voice-opt" data-value="zh-CN-YunyangNeural" style="padding:4px 8px;cursor:pointer;border-bottom:1px solid #f5f5f5;">云扬（沉稳男声·在线）</div>
-          <div class="voice-opt" data-value="zh-CN-XiaoyiNeural" style="padding:4px 8px;cursor:pointer;border-bottom:1px solid #f5f5f5;">晓伊（活泼女声·在线）</div>
-          <div class="voice-opt" data-value="zh-CN-YunjianNeural" style="padding:4px 8px;cursor:pointer;border-bottom:1px solid #f5f5f5;">云健（运动男声·在线）</div>
-          <div class="voice-opt" data-value="local:Microsoft Xiaoxiao (Natural)" style="padding:4px 8px;cursor:pointer;border-bottom:1px solid #f5f5f5;">晓晓·本地自然音（离线）</div>
-          <div class="voice-opt" data-value="local:Microsoft Yunxi (Natural)" style="padding:4px 8px;cursor:pointer;">云希·本地自然音（离线）</div>
-        </div>
-        <select id="sel-voice" style="display:none;">
-          <option value="zh-CN-XiaoxiaoNeural">晓晓</option>
-          <option value="zh-CN-YunxiNeural">云希</option>
-          <option value="zh-CN-YunyangNeural">云扬</option>
-          <option value="zh-CN-XiaoyiNeural">晓伊</option>
-          <option value="zh-CN-YunjianNeural">云健</option>
-          <option value="local:Microsoft Xiaoxiao (Natural)">晓晓·本地</option>
-          <option value="local:Microsoft Yunxi (Natural)">云希·本地</option>
-        </select>
-      </div>
+      <select id="sel-voice" style="flex:1;font-size:12px;padding:2px 4px;border:1px solid #ddd;border-radius:6px;background:#fff;outline:none;">
+        <option value="zh-CN-XiaoxiaoNeural">晓晓（自然女声·在线）</option>
+        <option value="zh-CN-YunxiNeural">云希（阳光男声·在线）</option>
+        <option value="zh-CN-YunyangNeural">云扬（沉稳男声·在线）</option>
+        <option value="zh-CN-XiaoyiNeural">晓伊（活泼女声·在线）</option>
+        <option value="zh-CN-YunjianNeural">云健（运动男声·在线）</option>
+        <option value="local:Microsoft Xiaoxiao (Natural)">晓晓·本地自然音（离线）</option>
+        <option value="local:Microsoft Yunxi (Natural)">云希·本地自然音（离线）</option>
+      </select>
       <select id="sel-rate" style="flex:0 0 70px;font-size:12px;padding:2px 4px;border:1px solid #ddd;border-radius:6px;background:#fff;outline:none;">
         <option value="-2">很慢</option>
         <option value="-1">慢</option>
