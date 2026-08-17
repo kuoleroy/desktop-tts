@@ -81,6 +81,16 @@ function whenTauriReady(cb) {
   setTimeout(() => clearInterval(t), 5000);
 }
 
+// 尽早广播就绪（Rust 侧据此显示面板并切交互模式）。
+// 不依赖 whenTauriReady：__TAURI__ 注入慢时其 5 秒轮询会超时，导致面板一直停留穿透态。
+(function tryEmitReady() {
+  if (window.__TAURI__?.event) {
+    window.__TAURI__.event.emit("panel-ready", {}).catch(() => {});
+  } else {
+    setTimeout(tryEmitReady, 300);
+  }
+})();
+
 whenTauriReady(() => {
   // 抓取默认开启（启动即 arm，全局选中即弹悬浮框）→ 按钮初始显示蓝色
   setActive("p-grab", true);
@@ -221,18 +231,23 @@ $("p-pause").addEventListener("click", () => {
   }
 });
 
-// 停止：广播给主窗口真实停止音频，同时通知 sidecar；并让所有按钮恢复朴素
+// 停止：广播给主窗口真实停止音频，同时通知 sidecar；并让所有按钮恢复朴素。
+// 与抓取互斥：停止后关闭抓取（停止朗读后不应继续弹出悬浮框）
 $("p-stop").addEventListener("click", () => {
   TTS.stop();
   if (window.__TAURI__?.event) {
     window.__TAURI__.event.emit("stop-audio", {});
   }
+  if (window.__TAURI__?.core && grabActive) {
+    grabActive = false;
+    window.__TAURI__.core.invoke("toggle_grab", { on: false }).catch(() => {});
+  }
   setActive("p-read", false);
   setActive("p-export", false);
   setActive("p-pause", false);
   setPauseLabel("暂停");
-  // 注意：不重置 p-grab —— 抓取是独立开关（启动即 arm），停止朗读不关闭抓取
-  showHint("已停止");
+  setActive("p-grab", false);
+  showHint("已停止（抓取已关闭）");
 });
 
 // 导出 MP3：合成并写入 Downloads，完成时经 export-done 提示
@@ -285,108 +300,40 @@ $("p-quit").addEventListener("click", () => {
 
 // ---- 跳过注入应用管理 ----
 async function refreshSkipList() {
-  if (!window.__TAURI__?.core) return;
+  if (!window.__TAURI__?.core) { setTimeout(refreshSkipList, 1000); return; }
   try {
     const data = await window.__TAURI__.core.invoke("get_skip_apps");
     const classes = data.skip_window_classes || [];
     const exes = data.skip_exe_names || [];
-    const el = $("#skip-list");
-    if (!el) return;
-    const items = [];
+    const sel = $("skip-select");
+    if (!sel) return;
+    const opts = [];
     classes.forEach((c) => {
-      items.push('<span style="display:inline-flex;align-items:center;gap:4px;background:#f0f2f5;border-radius:4px;padding:2px 6px;margin:2px 4px 2px 0;white-space:nowrap;">' +
-        '<span style="color:#999;font-size:10px;">类名</span>' + c +
-        '<button class="skip-rm" data-type="class" data-name="' + c.replace(/"/g, "&quot;") + '" style="background:none;border:none;color:#ff4d4f;cursor:pointer;font-size:12px;line-height:1;padding:0;">&times;</button></span>');
+      opts.push('<option value="class:' + c.replace(/"/g, "&quot;") + '">类名 ' + c + '</option>');
     });
     exes.forEach((e) => {
-      items.push('<span style="display:inline-flex;align-items:center;gap:4px;background:#f0f2f5;border-radius:4px;padding:2px 6px;margin:2px 4px 2px 0;white-space:nowrap;">' +
-        '<span style="color:#999;font-size:10px;">程序</span>' + e +
-        '<button class="skip-rm" data-type="exe" data-name="' + e.replace(/"/g, "&quot;") + '" style="background:none;border:none;color:#ff4d4f;cursor:pointer;font-size:12px;line-height:1;padding:0;">&times;</button></span>');
+      opts.push('<option value="exe:' + e.replace(/"/g, "&quot;") + '">程序 ' + e + '</option>');
     });
-    el.innerHTML = items.length ? items.join("") : '<span style="color:#bbb;">（无）</span>';
-    // 绑定删除事件
-    el.querySelectorAll(".skip-rm").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const type = btn.dataset.type === "class" ? "class" : "exe";
-        const name = btn.dataset.name;
-        try {
-          await window.__TAURI__.core.invoke("remove_skip_app", { appType: type, name });
-          refreshSkipList();
-          showHint("已移除：" + name);
-        } catch (err) {
-          showHint("移除失败：" + err.message, true);
-        }
-      });
-    });
+    sel.innerHTML = opts.length ? opts.join("") : '<option value="">（暂无跳过的应用）</option>';
   } catch (err) {
     showHint("读取跳过列表失败：" + err.message, true);
   }
 }
 
-// 管理：弹出弹窗，显示所有跳过应用，可逐个释放
-$("p-skip-manage").addEventListener("click", async () => {
-  if (!window.__TAURI__?.core) return;
-  const modal = $("#skip-modal");
-  const list = $("#skip-modal-list");
-  if (!modal || !list) return;
-  try {
-    const data = await window.__TAURI__.core.invoke("get_skip_apps");
-    const classes = data.skip_window_classes || [];
-    const exes = data.skip_exe_names || [];
-    const items = [];
-    classes.forEach((c) => {
-      items.push('<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 2px;border-bottom:1px solid #f0f0f0;">' +
-        '<span><span style="color:#999;font-size:10px;">类名 </span>' + c + '</span>' +
-        '<button class="skip-rm-modal" data-type="class" data-name="' + c.replace(/"/g, "&quot;") + '" style="background:none;border:1px solid #ff4d4f;border-radius:4px;color:#ff4d4f;cursor:pointer;font-size:11px;padding:2px 8px;">释放</button></div>');
-    });
-    exes.forEach((e) => {
-      items.push('<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 2px;border-bottom:1px solid #f0f0f0;">' +
-        '<span><span style="color:#999;font-size:10px;">程序 </span>' + e + '</span>' +
-        '<button class="skip-rm-modal" data-type="exe" data-name="' + e.replace(/"/g, "&quot;") + '" style="background:none;border:1px solid #ff4d4f;border-radius:4px;color:#ff4d4f;cursor:pointer;font-size:11px;padding:2px 8px;">释放</button></div>');
-    });
-    list.innerHTML = items.length ? items.join("") : '<div style="text-align:center;color:#bbb;padding:12px;">暂无跳过应用</div>';
-
-    // 绑定弹窗内的释放按钮
-    list.querySelectorAll(".skip-rm-modal").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const type = btn.dataset.type === "class" ? "class" : "exe";
-        const name = btn.dataset.name;
-        try {
-          await window.__TAURI__.core.invoke("remove_skip_app", { appType: type, name });
-          btn.closest("div").remove();
-          showHint("已释放：" + name);
-          refreshSkipList();
-          if (!list.querySelector(".skip-rm-modal")) {
-            list.innerHTML = '<div style="text-align:center;color:#bbb;padding:12px;">暂无跳过应用</div>';
-          }
-        } catch (err) {
-          showHint("释放失败：" + err.message, true);
-        }
-      });
-    });
-
-    modal.style.display = "flex";
-  } catch (err) {
-    showHint("读取失败：" + err.message, true);
-  }
+// 跳过应用被添加时刷新列表（Rust 侧广播）
+window.__TAURI__.event?.listen("skip-app-added", () => {
+  refreshSkipList();
 });
 
-// 关闭弹窗
-$("p-skip-modal-close").addEventListener("click", () => {
-  $("#skip-modal").style.display = "none";
-});
-
-// 选取窗口：点击后请用户切换到目标窗口，2秒后自动捕获
-$("p-skip-modal-pick").addEventListener("click", async () => {
+// 选取窗口：点击后把鼠标移到目标窗口，2 秒后自动识别并加入跳过
+$("p-skip-pick").addEventListener("click", async () => {
   if (!window.__TAURI__?.core) return;
-  $("#skip-modal").style.display = "none";
-  showHint("请切换到要跳过的窗口，等待2秒...");
+  showHint("请把鼠标移到要跳过的软件窗口上，等待2秒...");
   await new Promise((r) => setTimeout(r, 2000));
   try {
-    const info = await window.__TAURI__.core.invoke("get_fg_window_info");
+    const info = await window.__TAURI__.core.invoke("get_window_at");
     const cls = (info.class || "").trim();
     const exe = (info.exe || "").trim();
-    // 排除本应用自己的窗口
     if (cls === "Tauri Window" || cls === "Floater" || cls === "ttsGrabHidden" || cls === "Crop") {
       showHint("不能跳过本应用窗口", true);
       return;
@@ -401,65 +348,9 @@ $("p-skip-modal-pick").addEventListener("click", async () => {
       showHint("未检测到有效窗口", true);
       return;
     }
-    // 重新打开管理弹窗
     refreshSkipList();
-    // 重新加载管理弹窗内容
-    const data = await window.__TAURI__.core.invoke("get_skip_apps");
-    const classes = data.skip_window_classes || [];
-    const exes = data.skip_exe_names || [];
-    const items = [];
-    classes.forEach((c) => {
-      items.push('<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 2px;border-bottom:1px solid #f0f0f0;">' +
-        '<span><span style="color:#999;font-size:10px;">类名 </span>' + c + '</span>' +
-        '<button class="skip-rm-modal" data-type="class" data-name="' + c.replace(/"/g, "&quot;") + '" style="background:none;border:1px solid #ff4d4f;border-radius:4px;color:#ff4d4f;cursor:pointer;font-size:11px;padding:2px 8px;">释放</button></div>');
-    });
-    exes.forEach((e) => {
-      items.push('<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 2px;border-bottom:1px solid #f0f0f0;">' +
-        '<span><span style="color:#999;font-size:10px;">程序 </span>' + e + '</span>' +
-        '<button class="skip-rm-modal" data-type="exe" data-name="' + e.replace(/"/g, "&quot;") + '" style="background:none;border:1px solid #ff4d4f;border-radius:4px;color:#ff4d4f;cursor:pointer;font-size:11px;padding:2px 8px;">释放</button></div>');
-    });
-    $("#skip-modal-list").innerHTML = items.length ? items.join("") : '<div style="text-align:center;color:#bbb;padding:12px;">暂无跳过应用</div>';
-    // 重新绑定释放按钮
-    $("#skip-modal-list").querySelectorAll(".skip-rm-modal").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const type = btn.dataset.type === "class" ? "class" : "exe";
-        const name = btn.dataset.name;
-        try {
-          await window.__TAURI__.core.invoke("remove_skip_app", { appType: type, name });
-          btn.closest("div").remove();
-          showHint("已释放：" + name);
-          refreshSkipList();
-          if (!$("#skip-modal-list").querySelector(".skip-rm-modal")) {
-            $("#skip-modal-list").innerHTML = '<div style="text-align:center;color:#bbb;padding:12px;">暂无跳过应用</div>';
-          }
-        } catch (err) {
-          showHint("释放失败：" + err.message, true);
-        }
-      });
-    });
-    $("#skip-modal").style.display = "flex";
   } catch (err) {
     showHint("选取失败：" + err.message, true);
-  }
-});
-
-// 弹窗内释放全部
-$("p-skip-modal-clear").addEventListener("click", async () => {
-  if (!window.__TAURI__?.core) return;
-  try {
-    await window.__TAURI__.core.invoke("clear_skip_apps");
-    $("#skip-modal-list").innerHTML = '<div style="text-align:center;color:#bbb;padding:12px;">暂无跳过应用</div>';
-    showHint("已释放全部窗口");
-    refreshSkipList();
-  } catch (err) {
-    showHint("释放失败：" + err.message, true);
-  }
-});
-
-// 点击弹窗背景关闭
-$("skip-modal").addEventListener("click", (e) => {
-  if (e.target === $("#skip-modal")) {
-    $("#skip-modal").style.display = "none";
   }
 });
 
@@ -469,7 +360,23 @@ $("p-skip-refresh").addEventListener("click", () => {
   showHint("已刷新");
 });
 
-// 面板加载时刷新一次跳过列表
-whenTauriReady(() => {
-  setTimeout(refreshSkipList, 500);
+// 释放所选：删除下拉框中选中的跳过应用
+$("p-skip-release").addEventListener("click", async () => {
+  const sel = $("skip-select");
+  if (!sel) return;
+  const v = sel.value;
+  if (!v) { showHint("请先选择要释放的应用", true); return; }
+  const i = v.indexOf(":");
+  const type = v.slice(0, i) === "exe" ? "exe" : "class";
+  const name = v.slice(i + 1);
+  try {
+    await window.__TAURI__.core.invoke("remove_skip_app", { appType: type, name });
+    showHint("已释放：" + name);
+    refreshSkipList();
+  } catch (err) {
+    showHint("释放失败：" + err.message, true);
+  }
 });
+
+// 面板加载时刷新一次跳过列表（内部自带重试，不依赖 __TAURI__ 注入时序）
+setTimeout(refreshSkipList, 800);

@@ -75,6 +75,9 @@ struct SidecarReply {
     x: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     y: Option<i32>,
+    /// 拖放识别上报：命中跳过管理区时，grabber 上报需加入跳过注入列表的 exe 名
+    #[serde(skip_serializing_if = "Option::is_none")]
+    skip_exe: Option<String>,
     /// 当前配置（cmd=settings）：voice/rate/pitch
     #[serde(default, skip_serializing_if = "Option::is_none")]
     settings: Option<serde_json::Value>,
@@ -271,6 +274,11 @@ fn spawn_grabber(app: Arc<tauri::AppHandle>) -> Result<(Child, std::sync::mpsc::
                     reply.y,
                 );
             }
+            if let Some(exe) = &reply.skip_exe {
+                // 拖放识别：把识别到的软件进程加入跳过注入列表并热重载
+                add_skip_app(app2.as_ref().clone(), "exe".into(), exe.clone());
+                let _ = app2.emit("skip-app-added", exe);
+            }
         }
         log_error(&app2, "Grabber process exited");
         let _ = exit_tx.send(true);
@@ -361,6 +369,16 @@ fn show_panel(app: tauri::AppHandle) {
             let _ = panel.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(cx, cy)));
         }
         let _ = panel.show();
+        // 诊断：读面板标题确认实际加载的页面（panel.js 会把路径+元素状态写入标题）
+        {
+            let p2 = panel.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(1500));
+                if let Ok(t) = p2.title() {
+                    log_async(format!("[panel-dbg] title={}", t));
+                }
+            });
+        }
     }
     guard.0 = AppMode::Interact;
     guard.1 = true;
@@ -754,6 +772,56 @@ fn get_fg_window_info() -> serde_json::Value {
     })
 }
 
+/// 读取鼠标当前位置下的顶层窗口（进程）。不受置顶面板抢前台影响，
+/// 用于「跳过注入」的鼠标位置识别：把鼠标移到目标软件上 → 识别其窗口进程。
+#[tauri::command]
+fn get_window_at() -> serde_json::Value {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::OpenProcess;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetAncestor, GetClassNameW, GetCursorPos, GetWindowThreadProcessId, WindowFromPoint};
+
+    let mut class = String::new();
+    let mut exe = String::new();
+    let mut hwnd = 0usize;
+
+    unsafe {
+        let mut pt: windows_sys::Win32::Foundation::POINT = std::mem::zeroed();
+        GetCursorPos(&mut pt);
+        let w = WindowFromPoint(pt);
+        if w != 0 {
+            hwnd = GetAncestor(w, 2) as usize; // GA_ROOT = 2 取顶层窗口
+        }
+        if hwnd != 0 {
+            let mut buf = [0u16; 256];
+            let len = GetClassNameW(hwnd as _, buf.as_mut_ptr(), 256);
+            if len > 0 {
+                class = String::from_utf16_lossy(&buf[..len as usize]);
+            }
+            let mut pid: u32 = 0;
+            let _ = GetWindowThreadProcessId(hwnd as _, &mut pid);
+            if pid != 0 {
+                let h = OpenProcess(0x1000, 0, pid);
+                if h != 0 {
+                    let mut exe_buf = [0u16; 1024];
+                    let mut size = 1024u32;
+                    if windows_sys::Win32::System::Threading::QueryFullProcessImageNameW(h, 0, exe_buf.as_mut_ptr(), &mut size) != 0 {
+                        let path = String::from_utf16_lossy(&exe_buf[..size as usize]);
+                        if let Some(base) = std::path::Path::new(&path).file_name() {
+                            exe = base.to_string_lossy().to_lowercase();
+                        }
+                    }
+                    CloseHandle(h);
+                }
+            }
+        }
+    }
+
+    serde_json::json!({
+        "class": class,
+        "exe": exe
+    })
+}
+
 fn main() {
     // ---- 崩溃捕获：panic 时同步写入 diag.log（防 abort 前丢日志）----
     {
@@ -817,7 +885,7 @@ fn main() {
         .manage(AppState(Mutex::new((AppMode::Watch, false))))
         .invoke_handler(tauri::generate_handler![
             read_text, stop_read, set_voice, set_rate, set_pitch, export_mp3, list_models, model_dir, quit, toggle_grab, show_panel, get_settings, toggle_click_through, get_click_through, ocr_rect, show_crop, selread, clipwatch,
-            get_skip_apps, add_skip_app, remove_skip_app, clear_skip_apps, get_fg_window_info
+            get_skip_apps, add_skip_app, remove_skip_app, clear_skip_apps, get_fg_window_info, get_window_at
         ])
         .on_window_event(|window, event| {
             match event {
@@ -893,17 +961,6 @@ fn main() {
                     }
                 });
             }
-
-            // ---- 面板窗口：交互模式载体，可点击 ----
-            // 面板在 tauri.conf.json 中声明（与主窗口一致，由 Tauri 核心在 setup 前创建），
-            // 这里仅取引用并记录初始化状态。实验证明：在 setup() 内程序化创建的第二个
-            // WebView 窗口不会被初始化（inner=None 且页面不加载），而 config 声明的窗口正常。
-            let _panel_win = app.get_webview_window("panel").expect("panel window");
-            log(&format!(
-                "panel init: visible={} inner={:?}",
-                _panel_win.is_visible().unwrap_or(false),
-                _panel_win.inner_size().ok()
-            ));
 
             // ---- 全屏框选层：点击「框选截图」时全屏显示，用户拖拽框选区域 ----
             if let Some(crop_win) = app.get_webview_window("crop") {

@@ -35,6 +35,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print("  [req] " + (fmt % args), flush=True)
 
+    # 禁止缓存：WebView 会缓存 .js/.html，导致前端改动不生效
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
+        super().end_headers()
+
     def do_POST(self):
         if self.path == "/diag":
             length = int(self.headers.get("Content-Length", 0))

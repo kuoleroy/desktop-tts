@@ -73,14 +73,6 @@ whenTauriReady(() => {
     } catch (_) {}
   });
 
-  // 框选截图：呼出全屏框选层，拖拽框选文字区域后自动 OCR
-  $("btn-crop").addEventListener("click", async () => {
-    try {
-      await window.__TAURI__.window.getCurrentWindow().hide();
-      await window.__TAURI__.core.invoke("show_crop");
-    } catch (_) {}
-  });
-
   // 框选层显示时隐藏本窗口（兜底）
   window.__TAURI__.event.listen("hide-floater", () => {
     try { window.__TAURI__.window.getCurrentWindow().hide(); } catch (_) {}
