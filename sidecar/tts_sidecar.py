@@ -19,6 +19,7 @@ import signal
 import sys
 import threading
 import time
+import urllib.request
 
 # 后台工作进程：生命周期由 Rust 管理（stdin 指令 + 看门狗），无需响应 Ctrl+C。
 # 忽略 SIGINT，避免终端 Ctrl+C 把进程杀掉。
@@ -62,6 +63,28 @@ def _save_settings():
 
 
 _load_settings()
+
+# ============================================================
+# 自导入音色 API（防止 edge-tts 官方端点失效的备用引擎）。
+# 配置存根目录 voice_providers.json，由前端/Rust 管理，sidecar 合成时读取。
+# 合成时音色值形如 "api:<provider名>:<voice标识>"。
+# ============================================================
+PROVIDERS_FILE = os.path.join(os.path.dirname(BASE), "voice_providers.json")
+# OpenAI 兼容接口没有「列举音色」的能力，内置常用音色作为兜底（可被配置覆盖）
+OPENAI_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer"]
+# 自导入 API 合成超时（秒）
+API_TIMEOUT = 30
+
+
+def _load_providers():
+    """读取 voice_providers.json → {name: provider}。文件损坏/不存在返回 {}。"""
+    try:
+        with open(PROVIDERS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        lst = data.get("providers") if isinstance(data, dict) else data
+        return {p.get("name"): p for p in lst if isinstance(p, dict) and p.get("name")}
+    except Exception:
+        return {}
 
 # ---- 后台 asyncio 事件循环（edge-tts 跑在这里，便于取消）----
 _loop = None
@@ -188,6 +211,29 @@ def _synth(text, fname):
         except Exception as e2:
             raise RuntimeError(f"local sapi synth failed: {e2!r}")
 
+    v = state["voice"]
+    if isinstance(v, str) and v.startswith("api:"):
+        # 自导入音色 API：voice 形如 "api:provider名:voice标识"
+        parts = v.split(":", 2)
+        name = parts[1] if len(parts) > 1 else ""
+        api_voice = parts[2] if len(parts) > 2 else ""
+        provider = _load_providers().get(name)
+        if provider is None:
+            raise RuntimeError(f"provider {name!r} not found in voice_providers.json")
+        try:
+            return _api_synth(text, fname, provider, api_voice)
+        except Exception as cause:
+            # 自导入 API 失败：记录后自动回退本地自然音，保证朗读不中断
+            try:
+                with open(os.path.join(BASE, "sidecar_edge.log"), "a", encoding="utf-8") as _f:
+                    _f.write(f"[{time.strftime('%H:%M:%S')}] api-provider={name} voice={api_voice} FAIL: {cause!r} -> fallback local {FALLBACK_LOCAL_VOICE}\n")
+            except Exception:
+                pass
+            try:
+                return _sapi_synth(text, fname, FALLBACK_LOCAL_VOICE)
+            except Exception as e2:
+                raise RuntimeError(f"api({name}) {cause!r}; local sapi: {e2!r}")
+
     try:
         return _edge_synth(text, fname)
     except InterruptedError:
@@ -208,8 +254,147 @@ def _synth(text, fname):
             raise RuntimeError(f"edge-tts: {cause!r}; local sapi: {e2!r}")
 
 
+# ---- 自导入音色 API 合成：azure（SSML）与 openai 兼容（JSON /audio/speech）----
+def _http_to_file(req, fname):
+    """发起 HTTP 合成请求，响应体（mp3/wav 字节）写入 fname。失败抛 RuntimeError。"""
+    try:
+        with urllib.request.urlopen(req, timeout=API_TIMEOUT) as r:
+            data = r.read()
+    except Exception as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", "replace") if hasattr(e, "read") else ""
+        except Exception:
+            body = ""
+        raise RuntimeError(f"http synth failed: {e!r} {body[:300]}")
+    if not data:
+        raise RuntimeError("http synth returned empty body")
+    with open(fname, "wb") as f:
+        f.write(data)
+    return fname
+
+
+def _azure_synth(text, fname, p, voice):
+    region = (p.get("region") or "").strip()
+    key = (p.get("key") or "").strip()
+    if not region or not key:
+        raise RuntimeError("azure provider requires region and key")
+    url = f"https://{region}.tts.speech.microsoft.com/cognitiveservices/v1"
+    ssml = (
+        "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='zh-CN'>"
+        f"<voice name='{voice}'>{text}</voice></speak>"
+    ).encode("utf-8")
+    req = urllib.request.Request(url, data=ssml, method="POST", headers={
+        "Ocp-Apim-Subscription-Key": key,
+        "Content-Type": "application/ssml+xml",
+        "X-Microsoft-OutputFormat": "audio-24khz-160kbitrate-mono-mp3",
+        "User-Agent": "desktop-tts",
+    })
+    return _http_to_file(req, fname)
+
+
+def _openai_synth(text, fname, p, voice):
+    """openai 与 custom 共用 OpenAI 兼容的 /audio/speech 请求形态。"""
+    base = (p.get("base") or "").rstrip("/")
+    if not base:
+        raise RuntimeError("provider base url missing")
+    body = json.dumps({
+        "model": p.get("model") or "tts-1",
+        "input": text,
+        "voice": voice,
+        "response_format": "mp3",
+    }).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    key = (p.get("key") or "").strip()
+    if key:
+        headers["Authorization"] = "Bearer " + key
+    req = urllib.request.Request(base + "/audio/speech", data=body, method="POST", headers=headers)
+    return _http_to_file(req, fname)
+
+
+def _api_synth(text, fname, p, voice):
+    if p.get("type") == "azure":
+        return _azure_synth(text, fname, p, voice)
+    return _openai_synth(text, fname, p, voice)
+
+
+def _fetch_api_voices(p):
+    """拉取某 provider 的可用音色列表。azure 走官方列举接口；openai/custom 用内置默认。"""
+    if p.get("type") == "azure":
+        region = (p.get("region") or "").strip()
+        key = (p.get("key") or "").strip()
+        if not region or not key:
+            raise RuntimeError("azure requires region and key to list voices")
+        url = f"https://{region}.tts.speech.microsoft.com/cognitiveservices/voices/list"
+        req = urllib.request.Request(url, headers={
+            "Ocp-Apim-Subscription-Key": key, "User-Agent": "desktop-tts",
+        })
+        with urllib.request.urlopen(req, timeout=API_TIMEOUT) as r:
+            arr = json.loads(r.read().decode("utf-8"))
+        names = sorted(v.get("ShortName") for v in arr if v.get("ShortName"))
+        return names
+    voices = p.get("voices") or []
+    return list(voices) if voices else list(OPENAI_VOICES)
+
+
 # edge-tts 单次合成上限（字）。超长文本切成多块，每块独立合成、依次播放
-MAX_BLOCK = 2000
+MAX_BLOCK = 500
+
+# 朗读时忽略的成对符号（含包裹内容不读）。key=左符号, value=右符号。
+# 默认：方括号、花括号、中文括号、英文括号、书名号、尖括号。
+DEFAULT_IGNORE_PAIRS = {
+    "[": "]", "{": "}", "【": "】", "（": "）", "(": ")", "《": "》", "<": ">",
+}
+# 面板设置存 settings_app.json（Rust 写入），sidecar 每次合成时实时读取开关与自定义符号对
+APP_SETTINGS_FILE = os.path.join(os.path.dirname(BASE), "sidecar", "settings_app.json")
+
+
+def _ignore_config():
+    """读取 settings_app.json 的 ignore_pairs 开关与 ignore_symbols 自定义符号对。
+
+    返回 (enabled, pairs)。enabled 默认 True；pairs 为 {左符号: 右符号}，
+    用户未配置时用内置默认。
+    """
+    try:
+        with open(APP_SETTINGS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        enabled = bool(data.get("ignore_pairs", True))
+        syms = data.get("ignore_symbols")
+        if isinstance(syms, list) and syms:
+            pairs = {}
+            for s in syms:
+                if isinstance(s, str) and len(s) >= 2:
+                    pairs[s[0]] = s[-1]
+            if pairs:
+                return enabled, pairs
+        return enabled, dict(DEFAULT_IGNORE_PAIRS)
+    except Exception:
+        return True, dict(DEFAULT_IGNORE_PAIRS)
+
+
+def strip_ignored(text):
+    """删除成对符号包裹的内容（含符号本身），用于跳过注释/编者注等不朗读的片段。
+
+    只处理左右符号正确配对且不嵌套的片段；未闭合的符号保留原文。
+    """
+    enabled, pairs = _ignore_config()
+    if not enabled or not text or not pairs:
+        return text
+    out = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch in pairs:
+            end = pairs[ch]
+            j = text.find(end, i + 1)
+            if j != -1:
+                # 跳过整段（含符号），继续从右符号之后处理
+                i = j + 1
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def split_blocks(text, max_len=MAX_BLOCK):
@@ -257,6 +442,7 @@ def _export_mp3(text):
 def _run_heavy(cmd, text, rid):
     """后台线程执行耗时合成（tts/export），完成后回写结果。"""
     try:
+        text = strip_ignored(text)
         if cmd == "tts":
             files = _tts(text)
             out({"id": rid, "ok": True, "files": files})
@@ -265,6 +451,18 @@ def _run_heavy(cmd, text, rid):
             out({"id": rid, "ok": True, "file": p})
     except InterruptedError:
         out({"id": rid, "ok": False, "error": "interrupted by stop"})
+    except Exception as e:
+        out({"id": rid, "ok": False, "error": repr(e)})
+
+
+def _fetch_voices_heavy(name, rid):
+    """后台线程拉取 provider 音色列表（网络可能较慢），完成后回写 voices。"""
+    try:
+        p = _load_providers().get(name)
+        if p is None:
+            raise RuntimeError(f"provider {name!r} not found")
+        voices = _fetch_api_voices(p)
+        out({"id": rid, "ok": True, "voices": voices})
     except Exception as e:
         out({"id": rid, "ok": False, "error": repr(e)})
 
@@ -300,6 +498,10 @@ def handle(cmd, text, rid):
         return
 
     # 耗时命令：后台线程执行，主线程继续读 stdin 以便响应 stop
+    if cmd == "fetch-voices":
+        # 拉取某自导入 provider 的音色列表（text = provider 名）
+        threading.Thread(target=_fetch_voices_heavy, args=(text, rid), daemon=True).start()
+        return
     if cmd in ("tts", "export"):
         threading.Thread(target=_run_heavy, args=(cmd, text, rid), daemon=True).start()
         return

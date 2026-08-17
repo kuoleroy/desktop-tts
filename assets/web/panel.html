@@ -176,6 +176,39 @@ input[type=color] {
 .ctx-item:hover { background: #f0f2f5; }
 .ctx-item.danger { color: #ff4d4f; }
 .ctx-item.danger:hover { background: #fff1f0; }
+/* 管理音色 API 弹窗 */
+.modal-hidden { display: none; }
+.fhide { display: none !important; }
+#api-mgr { position: fixed; inset: 0; z-index: 90; }
+#api-mgr .modal-mask { position: absolute; inset: 0; background: rgba(0,0,0,.35); }
+#api-mgr .modal {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(360px, 92vw); max-height: 82vh; overflow: auto; box-sizing: border-box;
+  background: #fff; border-radius: 10px; padding: 12px;
+  box-shadow: 0 12px 40px rgba(0,0,0,.3);
+}
+.modal-head {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 13px; font-weight: 600; margin-bottom: 8px;
+}
+.modal-head button { background: none; border: none; font-size: 16px; cursor: pointer; color: #999; }
+.api-item {
+  display: flex; align-items: center; gap: 6px; padding: 6px;
+  border: 1px solid #eee; border-radius: 8px; margin-bottom: 6px; font-size: 12px;
+}
+.api-item .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.api-item .mitem {
+  font-size: 11px; padding: 3px 7px; border: 1px solid #ddd; border-radius: 6px;
+  background: #fff; cursor: pointer;
+}
+.api-item .mitem:hover { background: #f0f2f5; }
+.api-item .mitem.del { color: #ff4d4f; border-color: #ff4d4f; }
+.api-item .mitem.del:hover { background: #fff1f0; }
+.api-frow { display: flex; gap: 6px; margin-bottom: 6px; }
+.api-frow input, .api-frow select {
+  flex: 1; font-size: 12px; padding: 4px 6px;
+  border: 1px solid #ddd; border-radius: 6px; outline: none; box-sizing: border-box;
+}
 </style>
 </head>
 <body>
@@ -194,21 +227,27 @@ input[type=color] {
         <button class="p-btn" id="p-export">导出 MP3</button>
         <button class="p-btn toggle" id="p-grab">抓取</button>
       </div>
+      <div class="seg-row" style="margin-top:8px;">
+        <label class="toggle-line" style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;">
+          <input type="checkbox" id="p-ignore" checked>
+          <span>忽略括号内内容不朗读</span>
+        </label>
+      </div>
+      <div class="seg-row" style="margin-top:4px;">
+        <input id="p-ignore-syms" class="sel" style="flex:1;min-width:0;font-size:12px;padding:4px 6px;border:1px solid #ddd;border-radius:6px;"
+               placeholder="符号对，如 [],{},【】,（）,(),《》,<>">
+      </div>
     </div>
 
     <!-- 音色 / 语速 / 语调 -->
     <div class="pcard">
       <div class="pcard-title">音色 · 语速 · 语调</div>
+      <div class="seg-row">
+        <span class="field-label" style="margin:0;">自导入音色 API</span>
+        <button class="p-btn mini-btn" id="p-api-mgr">管理</button>
+      </div>
       <div class="select-line">
-        <select id="sel-voice" class="sel" style="flex:1;min-width:0;">
-          <option value="zh-CN-XiaoxiaoNeural">晓晓（自然女声·在线）</option>
-          <option value="zh-CN-YunxiNeural">云希（阳光男声·在线）</option>
-          <option value="zh-CN-YunyangNeural">云扬（沉稳男声·在线）</option>
-          <option value="zh-CN-XiaoyiNeural">晓伊（活泼女声·在线）</option>
-          <option value="zh-CN-YunjianNeural">云健（运动男声·在线）</option>
-          <option value="local:Microsoft Xiaoxiao (Natural)">晓晓·本地自然音（离线）</option>
-          <option value="local:Microsoft Yunxi (Natural)">云希·本地自然音（离线）</option>
-        </select>
+        <select id="sel-voice" class="sel" style="flex:1;min-width:0;"></select>
         <select id="sel-rate" class="sel" style="flex:0 0 68px;">
           <option value="-2">很慢</option>
           <option value="-1">慢</option>
@@ -283,6 +322,47 @@ input[type=color] {
 </div>
 <div id="panel-ctx" class="ctx-hidden">
   <div class="ctx-item" id="ctx-hide">隐藏面板</div>
+</div>
+
+<!-- 管理音色 API 弹窗 -->
+<div id="api-mgr" class="modal-hidden">
+  <div class="modal-mask"></div>
+  <div class="modal">
+    <div class="modal-head">
+      <span>管理音色 API</span>
+      <button id="api-mgr-x" aria-label="关闭">×</button>
+    </div>
+    <div id="api-mgr-list" class="api-form"></div>
+    <div class="section-sep"></div>
+    <div class="field-label">新增 / 编辑 Provider</div>
+    <div class="api-frow">
+      <input id="f-name" placeholder="名称（不含冒号）" style="flex:2;">
+      <select id="f-type" style="flex:1;">
+        <option value="azure">Azure 语音</option>
+        <option value="openai">OpenAI 兼容</option>
+        <option value="custom">通用 HTTP 端点</option>
+      </select>
+    </div>
+    <div id="f-azure">
+      <div class="field-label">Region（如 eastasia）· Subscription Key</div>
+      <div class="api-frow">
+        <input id="f-region" placeholder="region" style="flex:1;">
+        <input id="f-key" placeholder="Subscription Key" style="flex:2;">
+      </div>
+    </div>
+    <div id="f-openai" class="fhide">
+      <div class="field-label">Base URL · Model · API Key（OpenAI 兼容 /audio/speech 形状）</div>
+      <div class="api-frow">
+        <input id="f-base" placeholder="https://api.openai.com/v1" style="flex:2;">
+        <input id="f-model" placeholder="tts-1" style="flex:1;">
+      </div>
+      <input id="f-key-openai" placeholder="API Key" style="width:100%;box-sizing:border-box;">
+    </div>
+    <div class="api-frow" style="margin-top:8px;">
+      <button class="p-btn mini-btn primary" id="f-save" style="flex:1;">保存</button>
+      <button class="p-btn mini-btn" id="f-cancel" style="flex:1;">取消</button>
+    </div>
+  </div>
 </div>
 <script>
 window.__TAURI__ && window.__TAURI__.core && document.currentScript;

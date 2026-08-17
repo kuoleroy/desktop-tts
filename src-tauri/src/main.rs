@@ -84,6 +84,9 @@ struct SidecarReply {
     /// 当前配置（cmd=settings）：voice/rate/pitch
     #[serde(default, skip_serializing_if = "Option::is_none")]
     settings: Option<serde_json::Value>,
+    /// 自导入音色 API 拉取结果（cmd=fetch-voices）：音色标识列表
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    voices: Option<Vec<String>>,
 }
 
 /// dev 模式：从项目目录找 sidecar 脚本；release 模式：exe 旁 sidecar 目录
@@ -144,8 +147,8 @@ fn spawn_sidecar(app: Arc<tauri::AppHandle>) -> Result<(Child, std::sync::mpsc::
             let Ok(reply) = serde_json::from_str::<SidecarReply>(&line) else {
                 continue;
             };
-            // settings 回复路由到同步等待者（get_settings 命令）
-            if reply.settings.is_some() {
+            // settings / fetch-voices 回复路由到同步等待者（get_settings / fetch_provider_voices 命令）
+            if reply.settings.is_some() || reply.voices.is_some() {
                 let w = SETTINGS_WAITERS.lock().unwrap().remove(&reply.id);
                 if let Some(tx) = w {
                     let _ = tx.send(reply.clone());
@@ -665,6 +668,73 @@ fn get_settings(app: tauri::AppHandle) -> serde_json::Value {
     }
 }
 
+/// 自导入音色 API 配置文件路径（根目录 voice_providers.json，与 sidecar 读取位置一致）
+fn providers_file() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("voice_providers.json")
+}
+
+/// 读取自导入音色 API 配置（provider 列表），文件缺失/损坏返回空列表
+#[tauri::command]
+fn get_providers() -> serde_json::Value {
+    std::fs::read_to_string(providers_file())
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({ "providers": [] }))
+}
+
+/// 保存自导入音色 API 配置并返回保存后的值。
+/// sidecar 每次合成时重新从文件读取，因此无需额外通知即可生效。
+#[tauri::command]
+fn save_providers(providers: serde_json::Value) -> serde_json::Value {
+    if let Ok(s) = serde_json::to_string_pretty(&providers) {
+        if let Some(parent) = providers_file().parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(providers_file(), s);
+    }
+    providers
+}
+
+/// 拉取某 provider 的可用音色列表（同步等待 sidecar 结果，最迟 35s）。
+/// azure 走官方列举接口；openai/custom 返回内置默认音色。失败返回空列表。
+#[tauri::command]
+fn fetch_provider_voices(app: tauri::AppHandle, name: String) -> Vec<String> {
+    let default = Vec::new();
+    let state = app.state::<SidecarState>();
+    let tx = {
+        let mut guard = state.0.lock().unwrap();
+        if let Some((_c, exit_rx, _tx)) = guard.as_ref() {
+            if exit_rx.try_recv() == Ok(true) {
+                *guard = None;
+            }
+        }
+        if guard.is_none() {
+            match spawn_sidecar(Arc::new(app.clone())) {
+                Ok(s) => { *guard = Some(s); }
+                Err(_) => return default,
+            }
+        }
+        guard.as_ref().map(|(_c, _e, tx)| tx.clone())
+    };
+    let Some(tx) = tx else { return default };
+
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let (resp_tx, resp_rx) = mpsc::sync_channel::<SidecarReply>(1);
+    {
+        let mut registered = SETTINGS_WAITERS.lock().unwrap();
+        registered.insert(id, resp_tx);
+    }
+    if tx.send(CommandMessage { id, cmd: "fetch-voices".into(), payload: name }).is_err() {
+        return default;
+    }
+    match resp_rx.recv_timeout(std::time::Duration::from_secs(35)) {
+        Ok(r) if r.ok => r.voices.unwrap_or_default(),
+        _ => default,
+    }
+}
+
 /// 切换主窗口穿透/可交互（悬浮锁按钮调用）。
 /// 返回切换后的穿透状态（true=穿透）。同时广播给锁窗口更新图标。
 #[tauri::command]
@@ -714,10 +784,20 @@ struct AppSettings {
     floater_color: String,
     #[serde(default = "default_floater_opacity")]
     floater_opacity: f64,
+    /// 朗读时忽略成对符号包裹的内容（如 [注]、【】、（）等）
+    #[serde(default = "default_ignore_pairs")]
+    ignore_pairs: bool,
+    /// 用户自定义的忽略符号对列表，每项形如 "[]"、"【】"
+    #[serde(default = "default_ignore_symbols")]
+    ignore_symbols: Vec<String>,
 }
 
 fn default_floater_color() -> String { "#1e2026".into() }
 fn default_floater_opacity() -> f64 { 0.84 }
+fn default_ignore_pairs() -> bool { true }
+fn default_ignore_symbols() -> Vec<String> {
+    vec!["[]".into(), "{}".into(), "【】".into(), "（）".into(), "()".into(), "《》".into(), "<>".into()]
+}
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -727,6 +807,8 @@ impl Default for AppSettings {
             hotkey_ct: "Ctrl+Shift+X".into(),
             floater_color: default_floater_color(),
             floater_opacity: default_floater_opacity(),
+            ignore_pairs: default_ignore_pairs(),
+            ignore_symbols: default_ignore_symbols(),
         }
     }
 }
@@ -1236,7 +1318,8 @@ fn main() {
             get_grab_skip_apps, add_grab_skip_app, remove_grab_skip_app, clear_grab_skip_apps,
             get_app_settings, set_app_settings, get_click_through, toggle_click_through,
             set_main_scale, toggle_panel_ui, get_panel_visible,
-            list_dances, open_folder, dance_dir
+            list_dances, open_folder, dance_dir,
+            get_providers, save_providers, fetch_provider_voices
         ])
         .on_window_event(|window, event| {
             match event {
