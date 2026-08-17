@@ -668,11 +668,7 @@ whenTauriReady(() => {
     window.__TAURI__.event.emit("mode-confirmed", "main:" + e.payload);
     setMode(e.payload);
   });
-  // 双击模型 → 显示面板（回到面板）。由 Rust 处理显示并切交互模式。
-  document.addEventListener("dblclick", () => {
-    window.__TAURI__.event.emit("pet-dblclick", {});
-  });
-  // 模型拖动：位移超过阈值才拖动窗口（可交互模式生效），避免与双击冲突
+  // 模型拖动：位移超过阈值才拖动窗口（可交互模式生效）
   const DRAG_THRESHOLD = 20;
   let press = null;
   document.addEventListener("mousedown", (e) => {
@@ -718,6 +714,13 @@ whenTauriReady(() => {
       menu.classList.remove("hidden");
       menu.style.left = Math.min(e.clientX, window.innerWidth - menu.offsetWidth - 4) + "px";
       menu.style.top = Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 4) + "px";
+      // 根据面板当前可见性，切换「显示面板/隐藏面板」文案
+      const showItem = menu.querySelector('[data-action="show-panel"]');
+      if (showItem) {
+        window.__TAURI__.core.invoke("get_panel_visible").then((vis) => {
+          showItem.textContent = vis ? "隐藏面板" : "显示面板";
+        }).catch(() => {});
+      }
     }
     rightDrag.on = false;
   });
@@ -729,7 +732,7 @@ whenTauriReady(() => {
     item.addEventListener("click", async () => {
       const a = item.dataset.action;
       if (a === "show-panel") {
-        try { window.__TAURI__.event.emit("pet-dblclick"); } catch (_) {}
+        try { await window.__TAURI__.core.invoke("toggle_panel_ui"); } catch (_) {}
       } else if (a === "reset-size") {
         try {
           const win = window.__TAURI__.window.getCurrentWindow();
@@ -740,6 +743,20 @@ whenTauriReady(() => {
         } catch (err) {
           setStatus("恢复失败: " + (err?.message || err));
         }
+      }
+      menu.classList.add("hidden");
+    });
+  });
+  // 窗口大小：悬浮子菜单选择比例 → 按桌面工作区比例调整窗口
+  menu?.querySelectorAll(".sub-item").forEach((item) => {
+    item.addEventListener("click", async () => {
+      const scale = parseFloat(item.dataset.scale);
+      if (isNaN(scale)) return;
+      try {
+        await window.__TAURI__.core.invoke("set_main_scale", { scale });
+        setStatus("窗口大小 " + item.textContent.trim());
+      } catch (err) {
+        setStatus("调整失败: " + (err?.message || err));
       }
       menu.classList.add("hidden");
     });

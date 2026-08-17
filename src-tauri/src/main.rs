@@ -642,6 +642,24 @@ fn get_click_through() -> bool {
     CLICK_THROUGH.load(Ordering::Relaxed) != 0
 }
 
+/// 按桌面工作区比例调整模型窗口（main）大小，并居中显示。
+/// scale: 1.0=全屏，0.9=9/10 ... 0.5=1/2, 0.333=1/3 等。
+#[tauri::command]
+fn set_main_scale(app: tauri::AppHandle, scale: f64) {
+    let Some(main) = app.get_webview_window("main") else { return };
+    let Some(m) = app.primary_monitor().ok().flatten() else { return };
+    let wa = m.work_area();
+    let size = wa.size;
+    let pos = wa.position;
+    let w = (size.width as f64 * scale).round().max(120.0) as u32;
+    let h = (size.height as f64 * scale).round().max(150.0) as u32;
+    let _ = main.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(w, h)));
+    let cx = pos.x + (size.width as i32 - w as i32) / 2;
+    let cy = pos.y + (size.height as i32 - h as i32) / 2;
+    let _ = main.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(cx, cy)));
+    log_async(format!("[{}] set main scale {:.2} -> {}x{}", std::process::id(), scale, w, h));
+}
+
 // ---- 应用设置：穿透状态 + 快捷键（持久化到 sidecar/settings_app.json）----
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -726,6 +744,20 @@ fn parse_code(k: &str) -> Option<Code> {
 }
 
 /// 面板显示/隐藏切换（观赏 ↔ 交互）
+/// 面板显示/隐藏切换（右键菜单用）
+#[tauri::command]
+fn toggle_panel_ui(app: tauri::AppHandle) {
+    toggle_panel(&app);
+}
+
+/// 查询面板当前是否在前台（右键菜单据此显示「显示面板/隐藏面板」）
+#[tauri::command]
+fn get_panel_visible(app: tauri::AppHandle) -> bool {
+    let st = app.state::<AppState>();
+    let guard = st.0.lock().unwrap();
+    guard.1
+}
+
 fn toggle_panel(app: &tauri::AppHandle) {
     let app_state = app.state::<AppState>();
     let mut st = app_state.0.lock().unwrap();
@@ -1146,7 +1178,8 @@ fn main() {
             read_text, stop_read, set_voice, set_rate, set_pitch, export_mp3, list_models, model_dir, quit, toggle_grab, show_panel, get_settings, toggle_click_through, get_click_through, ocr_rect, show_crop, selread, clipwatch,
             get_skip_apps, add_skip_app, remove_skip_app, clear_skip_apps, get_fg_window_info, get_window_at,
             get_grab_skip_apps, add_grab_skip_app, remove_grab_skip_app, clear_grab_skip_apps,
-            get_app_settings, set_app_settings, get_click_through, toggle_click_through
+            get_app_settings, set_app_settings, get_click_through, toggle_click_through,
+            set_main_scale, toggle_panel_ui, get_panel_visible
         ])
         .on_window_event(|window, event| {
             match event {
@@ -1300,35 +1333,6 @@ apply_hotkeys(app.handle(), &settings.hotkey_panel, &settings.hotkey_ct);
                     st.1 = false;
                     let _ = panel_app_handle.emit("toggle-mode", "watch");
                     log("panel-closing: emitted watch");
-                });
-            }
-
-            // ---- 双击模型 → 显示面板并切交互（与双击面板回模型互补） ----
-            static LISTENER_PET_DBLCLICK: &str = "pet-dblclick";
-            if !REGISTERED_EVENTS.lock().unwrap().contains(LISTENER_PET_DBLCLICK) {
-                REGISTERED_EVENTS.lock().unwrap().insert(LISTENER_PET_DBLCLICK);
-                let pet_app_handle = Arc::clone(&app_handle);
-                app.listen_any(LISTENER_PET_DBLCLICK, move |_| {
-                    log("pet-dblclick received");
-                    let app_state = pet_app_handle.state::<AppState>();
-                    let mut st = app_state.0.lock().unwrap();
-                    if !st.1 {
-                        if let (Some(main), Some(panel)) = (
-                            pet_app_handle.get_webview_window("main"),
-                            pet_app_handle.get_webview_window("panel"),
-                        ) {
-                            if let Ok(pos) = main.outer_position() {
-                                let win_size = panel.inner_size().ok().unwrap_or(tauri::PhysicalSize::new(280, 400));
-                                let (cx, cy) = clamp_to_work_area(&pet_app_handle, pos.x + 260, pos.y + 20, win_size.width, win_size.height);
-                                let _ = panel.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(cx, cy)));
-                            }
-                            let _ = panel.show();
-                        }
-                        st.0 = AppMode::Interact;
-                        st.1 = true;
-                        let _ = pet_app_handle.emit("toggle-mode", "interact");
-                        log("pet-dblclick: panel shown, interact mode");
-                    }
                 });
             }
 
