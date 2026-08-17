@@ -128,6 +128,18 @@ async function modelUrl(name) {
   return "models/" + name;
 }
 
+async function danceUrl(name) {
+  // Tauri 下用 asset 协议从根目录 dance/ 加载；dev(8877)/浏览器 下走相对 dance/
+  const isTauri = await tauriReady();
+  if (isTauri && window.__TAURI__?.core?.convertFileSrc) {
+    const dir = await call("danceDir");
+    return window.__TAURI__.core.convertFileSrc(
+      dir.replace(/\\/g, "/") + "/" + name
+    );
+  }
+  return "dance/" + name;
+}
+
 // 等待 Tauri IPC 注入完成；浏览器/超时则返回 false
 function tauriReady(timeout = 3000) {
   return new Promise((resolve) => {
@@ -178,6 +190,10 @@ function call(method, ...args) {
     setPitch: ["set_pitch", (v) => ({ pitch: v })],
     listModels: ["list_models", () => undefined],
     modelDir: ["model_dir", () => undefined],
+    listDances: ["list_dances", () => undefined],
+    modelsDirPath: ["model_dir", () => undefined],
+    openFolder: ["open_folder", (v) => ({ path: v })],
+    danceDir: ["dance_dir", () => undefined],
     quit: ["quit", () => undefined],
   };
   if (window.__TAURI__?.core?.invoke && CMDS[method]) {
@@ -187,6 +203,9 @@ function call(method, ...args) {
   const mocks = {
     listModels: () => [],
     modelDir: () => "",
+    listDances: () => [],
+    openFolder: () => {},
+    danceDir: () => "",
     readText: () => {},
     stopRead: () => {},
   };
@@ -247,7 +266,8 @@ function sampleRotation(boneIdx, t) {
 
 async function loadDance(name) {
   try {
-    const res = await fetch("dance/" + name + ".vmd");
+    const url = await danceUrl(name + ".vmd");
+    const res = await fetch(url);
     if (!res.ok) throw new Error("fetch " + res.status);
     const buf = await res.arrayBuffer();
     const parsed = parseVMD(buf);
@@ -721,6 +741,9 @@ whenTauriReady(() => {
           showItem.textContent = vis ? "隐藏面板" : "显示面板";
         }).catch(() => {});
       }
+      // 弹出菜单时异步填充模型和舞蹈子菜单
+      _populateModelSub();
+      _populateDanceSub();
     }
     rightDrag.on = false;
   });
@@ -747,6 +770,25 @@ whenTauriReady(() => {
       menu.classList.add("hidden");
     });
   });
+  // ---- 延迟隐藏子菜单：移出菜单项后 300ms 才隐藏，移入子菜单取消隐藏 ----
+  menu?.querySelectorAll(".menu-item.has-sub").forEach((item) => {
+    const sub = item.querySelector(".submenu");
+    if (!sub) return;
+    sub.classList.add("sub-hidden"); // 初始隐藏
+    let hideTimer = null;
+    const hide = () => {
+      clearTimeout(hideTimer);
+      hideTimer = setTimeout(() => sub.classList.add("sub-hidden"), 100);
+    };
+    const show = () => {
+      clearTimeout(hideTimer);
+      sub.classList.remove("sub-hidden");
+    };
+    item.addEventListener("mouseleave", hide);
+    item.addEventListener("mouseenter", show);
+    sub.addEventListener("mouseenter", show);
+    sub.addEventListener("mouseleave", hide);
+  });
   // 窗口大小：悬浮子菜单选择比例 → 按桌面工作区比例调整窗口
   menu?.querySelectorAll(".sub-item").forEach((item) => {
     item.addEventListener("click", async () => {
@@ -761,8 +803,86 @@ whenTauriReady(() => {
       menu.classList.add("hidden");
     });
   });
-  // 滚轮缩放视角（模型放大缩小）
+  // ---- 填充模型/舞蹈子菜单（事件委托：点击子菜单项切换/打开文件夹） ----
+  const modelSub = $("model-sub");
+  const danceSub = $("dance-sub");
+  async function _populateModelSub() {
+    if (!modelSub) return;
+    try {
+      const list = await call("listModels");
+      const names = list.map((p) => p.split(/[\\/]/).pop()).filter((n) => n);
+      const cur = currentModel || "";
+      const items = names.map((n) =>
+        '<div class="sub-item' + (n === cur ? ' cur' : '') + '" data-model="' + n.replace(/"/g, "&quot;") + '">'
+        + (n === cur ? '▶ ' : '') + n + '</div>'
+      );
+      items.push('<div class="sub-sep"></div>');
+      items.push('<div class="sub-item" data-action="open-models-folder">📁 打开模型文件夹</div>');
+      modelSub.innerHTML = items.join("");
+    } catch (_) {}
+  }
+  async function _populateDanceSub() {
+    if (!danceSub) return;
+    try {
+      const list = await call("listDances");
+      const cur = danceName ? danceName + ".vmd" : "";
+      const items = list.map((n) =>
+        '<div class="sub-item' + (n === cur ? ' cur' : '') + '" data-dance="' + n.replace(/"/g, "&quot;") + '">'
+        + (n === cur ? '▶ ' : '') + n + '</div>'
+      );
+      items.push('<div class="sub-sep"></div>');
+      items.push('<div class="sub-item" data-action="open-dances-folder">📁 打开舞蹈文件夹</div>');
+      danceSub.innerHTML = items.join("");
+    } catch (_) {}
+  }
+  // 页面加载时立即预填充（数据提前准备好，不等右键）
+  _populateModelSub();
+  _populateDanceSub();
+  // 事件委托：监听子菜单上的所有点击
+  modelSub?.addEventListener("click", async (ev) => {
+    const item = ev.target.closest(".sub-item");
+    if (!item) return;
+    const name = item.dataset.model;
+    if (name) {
+      ev.stopPropagation();
+      try {
+        await loadVRM(await modelUrl(name));
+        setStatus("已切换: " + name);
+      } catch (err) {
+        setStatus("切换失败: " + (err?.message || err));
+      }
+      document.getElementById("pet-menu").classList.add("hidden");
+    } else if (item.dataset.action === "open-models-folder") {
+      ev.stopPropagation();
+      try {
+        const dir = await call("modelDir");
+        if (dir) await call("openFolder", dir);
+      } catch (_) {}
+      document.getElementById("pet-menu").classList.add("hidden");
+    }
+  });
+  danceSub?.addEventListener("click", async (ev) => {
+    const item = ev.target.closest(".sub-item");
+    if (!item) return;
+    const name = item.dataset.dance;
+    if (name) {
+      ev.stopPropagation();
+      const base = name.replace(/\.vmd$/i, "");
+      loadDance(base);
+      setStatus("已切换舞蹈: " + base);
+      document.getElementById("pet-menu").classList.add("hidden");
+    } else if (item.dataset.action === "open-dances-folder") {
+      ev.stopPropagation();
+      try {
+        const dir = await call("danceDir");
+        if (dir) await call("openFolder", dir);
+      } catch (_) {}
+      document.getElementById("pet-menu").classList.add("hidden");
+    }
+  });
+  // 滚轮缩放视角（模型放大缩小），子菜单内滚动不拦截
   document.addEventListener("wheel", (e) => {
+    if (e.target.closest(".submenu")) return; // 子菜单内让原生滚动
     e.preventDefault();
     viewZoom = Math.max(0.3, Math.min(4, viewZoom * (e.deltaY > 0 ? 1.1 : 0.9)));
   }, { passive: false });

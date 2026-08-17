@@ -581,6 +581,49 @@ fn model_dir() -> String {
     models_dir().to_string_lossy().to_string()
 }
 
+/// 返回舞蹈文件存放目录（根目录 dance/），供前端打开文件夹和 asset 协议加载用
+#[tauri::command]
+fn dance_dir() -> String {
+    dance_root_dir().to_string_lossy().to_string()
+}
+
+/// 舞蹈文件根目录（dance/，规范化路径以消除 `..`）
+fn dance_root_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("dance")
+        .canonicalize()
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("dance")
+        })
+}
+
+/// 列出所有可用的舞蹈动画文件（dance/ 下的 .vmd）
+#[tauri::command]
+fn list_dances() -> Vec<String> {
+    let dance_dir = dance_root_dir();
+    std::fs::read_dir(&dance_dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| {
+                    e.file_name().to_string_lossy().to_lowercase().ends_with(".vmd")
+                })
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 在资源管理器中打开指定目录
+#[tauri::command]
+fn open_folder(path: String) {
+    let _ = std::process::Command::new("explorer")
+        .arg(&path)
+        .spawn();
+}
+
 /// 读取当前 TTS 配置（音色/语速/语调），sidecar 可能未启动，失败返回默认
 #[tauri::command]
 fn get_settings(app: tauri::AppHandle) -> serde_json::Value {
@@ -1179,7 +1222,8 @@ fn main() {
             get_skip_apps, add_skip_app, remove_skip_app, clear_skip_apps, get_fg_window_info, get_window_at,
             get_grab_skip_apps, add_grab_skip_app, remove_grab_skip_app, clear_grab_skip_apps,
             get_app_settings, set_app_settings, get_click_through, toggle_click_through,
-            set_main_scale, toggle_panel_ui, get_panel_visible
+            set_main_scale, toggle_panel_ui, get_panel_visible,
+            list_dances, open_folder, dance_dir
         ])
         .on_window_event(|window, event| {
             match event {
@@ -1207,6 +1251,7 @@ fn main() {
             let scope = app.asset_protocol_scope();
             let _ = scope.allow_directory(models_dir(), true);
             let _ = scope.allow_directory(cache_dir(), true);
+            let _ = scope.allow_directory(dance_root_dir(), true);
 
             // ---- 主窗口：按 CLICK_THROUGH 设置初始穿透状态（默认穿透，悬停自动切回交互）----
             let main_win = app.get_webview_window("main").expect("main window");

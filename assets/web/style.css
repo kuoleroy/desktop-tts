@@ -210,10 +210,15 @@ html, body {
   box-shadow: 0 6px 20px rgba(0,0,0,0.18);
   padding: 4px;
   min-width: 110px;
+  max-height: 220px;
+  overflow-y: auto;
   font-size: 13px;
   z-index: 61;
 }
-#pet-menu .menu-item.has-sub:hover .submenu { display: block; }
+/* JS 控制显隐：不加 sub-hidden 时显示，加 sub-hidden 时隐藏 */
+#pet-menu .submenu:not(.sub-hidden) { display: block; }
 #pet-menu .sub-item { padding: 6px 12px; border-radius: 6px; color: #333; cursor: pointer; white-space: nowrap; }
 #pet-menu .sub-item:hover { background: #eef2ff; }
+#pet-menu .sub-item.cur { color: #1677ff; font-weight: 500; background: #f0f5ff; }
+#pet-menu .sub-sep { height: 1px; background: #eee; margin: 4px 8px; }
 #pet-menu.hidden { display: none; }
