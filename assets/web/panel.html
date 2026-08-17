@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>桌宠控制台</title>
+<title>桌宠设置</title>
 <link rel="icon" href="data:,">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -18,7 +18,7 @@ html, body {
 }
 body::before {
   content: ''; position: fixed; inset: 0;
-  background: #fff;
+  background: #f2f3f5;
   border-radius: 14px;
   pointer-events: none;
 }
@@ -27,7 +27,7 @@ body::before {
   inset: 0;
   display: flex;
   flex-direction: column;
-  border: 1px solid rgba(0, 0, 0, 0.12);
+  border: 1px solid rgba(0, 0, 0, 0.1);
   border-radius: 14px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
   overflow: hidden;
@@ -37,34 +37,39 @@ body::before {
   from { opacity: 0; transform: scale(0.92); }
   to   { opacity: 1; transform: scale(1); }
 }
-.panel-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 14px;
-  border-bottom: 1px solid #eee;
-  font-size: 13px;
-  font-weight: 600;
-  color: #333;
-  cursor: move;
-  -webkit-user-select: none;
-  user-select: none;
+/* 响应式栅格：窗口窄时单列，宽时自动多列 */
+.panel-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  align-items: start;
+  align-content: start;
+  padding: 12px;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
-.panel-head:active { cursor: grabbing; }
-#p-back {
-  border: 1px solid #d9d9d9;
-  background: #fff;
-  border-radius: 8px;
-  padding: 3px 10px;
-  font-size: 12px;
-  cursor: pointer;
-}
-#p-back:hover { background: #f0f2f5; }
-.panel-body { padding: 10px; overflow-y: auto; scrollbar-width: none; -ms-overflow-style: none; }
 .panel-body::-webkit-scrollbar { display: none; }
+.pcard {
+  background: #fff;
+  border: 1px solid #eef0f2;
+  border-radius: 10px;
+  padding: 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+.pcard--wide { grid-column: 1 / -1; }
+.pcard-title {
+  font-size: 12px; color: #555; font-weight: 600;
+  margin-bottom: 8px;
+}
+.phint {
+  font-size: 11px; color: #666; text-align: center;
+  min-height: 15px; margin-bottom: 6px;
+}
 #ptext {
   width: 100%;
-  min-height: 60px;
+  min-height: 56px;
   padding: 8px;
   border: 1px solid #d9d9d9;
   border-radius: 8px;
@@ -72,16 +77,15 @@ body::before {
   font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
   color: #333;
   resize: none;
-  overflow: hidden;
   outline: none;
   user-select: text;
   -webkit-user-select: text;
 }
 #ptext:focus { border-color: #1677ff; }
-.panel-row { display: flex; gap: 8px; margin-bottom: 8px; }
+.btn-row { display: flex; gap: 8px; margin-top: 8px; }
 .p-btn {
   flex: 1;
-  padding: 9px 6px;
+  padding: 8px 6px;
   border: 1px solid #d9d9d9;
   border-radius: 8px;
   background: #fff;
@@ -96,35 +100,33 @@ body::before {
 .p-btn.primary:hover { background: #0958d9; }
 .p-btn.danger { background: #fff; border-color: #ff4d4f; color: #ff4d4f; }
 .p-btn.danger:hover { background: #fff1f0; }
-/* 抓取开关样式：开启态高亮，类似单选框按下 */
 .p-btn.toggle { background: #fff; }
 .p-btn.toggle.active { background: #1677ff; border-color: #1677ff; color: #fff; }
-.panel-section {
-  border-top: 1px solid #eee;
-  border-bottom: 1px solid #eee;
-  margin: 8px 0;
-  padding: 6px 2px;
+.hk-btn { padding: 6px 2px; font-size: 10px; }
+.mini-btn { padding: 6px 4px; font-size: 11px; }
+.select-line { display: flex; gap: 6px; align-items: center; }
+.sel {
+  font-size: 12px; padding: 3px 4px;
+  border: 1px solid #ddd; border-radius: 6px;
+  background: #fff; outline: none; color: #333;
 }
-.panel-section label {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 12px;
-  color: #666;
-  padding: 4px 0;
+.sel-full { width: 100%; font-size: 11px; padding: 5px 6px; color: #666; }
+.field-label { font-size: 11px; color: #999; margin-bottom: 4px; }
+.seg-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.hk-line { display: flex; gap: 4px; }
+.section-sep { border-top: 1px solid #f0f0f0; margin: 8px 0; }
+.ctrl-row { display: flex; align-items: center; gap: 6px; }
+.ctrl-row input[type=range] { flex: 1; height: 4px; accent-color: #1677ff; }
+input[type=color] {
+  width: 26px; height: 20px; padding: 0;
+  border: 1px solid #ddd; border-radius: 4px; background: #fff; cursor: pointer;
 }
-.panel-section select {
-  font-size: 12px;
-  padding: 2px 4px;
-  border: 1px solid #ddd;
-  border-radius: 6px;
-  background: #fff;
-  max-width: 130px;
-  outline: none;
-}
+.op-lbl { font-size: 10px; color: #999; width: 30px; text-align: right; }
 .panel-foot {
-  padding: 8px 10px;
-  border-top: 1px solid #eee;
+  display: flex;
+  padding: 8px 12px;
+  border-top: 1px solid #e6e6e6;
+  background: #fff;
 }
 /* 进度条（暂时隐藏）
 .panel-progress {
@@ -152,98 +154,135 @@ body::before {
 }
 .prog-label { white-space: nowrap; min-width: 36px; text-align: right; }
 */
+/* 右键菜单（防误删，用 CSS 类控制显隐） */
+#panel-ctx {
+  position: fixed;
+  z-index: 99;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  min-width: 130px;
+  padding: 4px;
+}
+#panel-ctx.ctx-hidden { display: none; }
+.ctx-item {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: #333;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.ctx-item:hover { background: #f0f2f5; }
+.ctx-item.danger { color: #ff4d4f; }
+.ctx-item.danger:hover { background: #fff1f0; }
 </style>
 </head>
 <body>
 <div id="panel">
   <div class="panel-body">
-    <div id="panel-hint" style="font-size:11px;color:#666;padding:4px 2px;min-height:16px;text-align:center;"></div>
-    <div class="panel-row">
-      <textarea id="ptext" rows="4" placeholder="输入要朗读 / 导出的文本...">你好，我是桌面小精灵。选中文字，我就能帮你朗读出来。</textarea>
+    <!-- 文本朗读 -->
+    <div class="pcard pcard--wide">
+      <div class="pcard-title">文本朗读</div>
+      <div id="panel-hint" class="phint"></div>
+      <textarea id="ptext" rows="2" placeholder="输入要朗读 / 导出的文本...">你好，我是桌面小精灵。选中文字，我就能帮你朗读出来。</textarea>
+      <div class="btn-row">
+        <button class="p-btn" id="p-read">朗读</button>
+        <button class="p-btn" id="p-stop">停止</button>
+      </div>
+      <div class="btn-row">
+        <button class="p-btn" id="p-export">导出 MP3</button>
+        <button class="p-btn toggle" id="p-grab">抓取</button>
+      </div>
     </div>
-    <div class="panel-row">
-      <button class="p-btn" id="p-read">朗读</button>
-      <button class="p-btn" id="p-stop">停止</button>
+
+    <!-- 音色 / 语速 / 语调 -->
+    <div class="pcard">
+      <div class="pcard-title">音色 · 语速 · 语调</div>
+      <div class="select-line">
+        <select id="sel-voice" class="sel" style="flex:1;min-width:0;">
+          <option value="zh-CN-XiaoxiaoNeural">晓晓（自然女声·在线）</option>
+          <option value="zh-CN-YunxiNeural">云希（阳光男声·在线）</option>
+          <option value="zh-CN-YunyangNeural">云扬（沉稳男声·在线）</option>
+          <option value="zh-CN-XiaoyiNeural">晓伊（活泼女声·在线）</option>
+          <option value="zh-CN-YunjianNeural">云健（运动男声·在线）</option>
+          <option value="local:Microsoft Xiaoxiao (Natural)">晓晓·本地自然音（离线）</option>
+          <option value="local:Microsoft Yunxi (Natural)">云希·本地自然音（离线）</option>
+        </select>
+        <select id="sel-rate" class="sel" style="flex:0 0 68px;">
+          <option value="-2">很慢</option>
+          <option value="-1">慢</option>
+          <option value="0" selected>正常</option>
+          <option value="1">快</option>
+          <option value="2">很快</option>
+        </select>
+        <select id="sel-pitch" class="sel" style="flex:0 0 68px;">
+          <option value="low">低沉</option>
+          <option value="medium" selected>适中</option>
+          <option value="high">偏高</option>
+        </select>
+      </div>
     </div>
-    <div class="panel-row">
-      <button class="p-btn" id="p-export">导出 MP3</button>
-      <button class="p-btn toggle" id="p-grab">抓取</button>
-    </div>
-    <!-- 进度条（暂时隐藏）
-    <div class="panel-progress" id="prog-wrap">
-      <div class="prog-track"><div class="prog-fill" id="prog-fill"></div></div>
-      <span class="prog-label" id="prog-label"></span>
-    </div>
-    -->
-    <div class="panel-section" style="display:flex;gap:6px;align-items:center;">
-      <select id="sel-voice" style="flex:1;font-size:12px;padding:2px 4px;border:1px solid #ddd;border-radius:6px;background:#fff;outline:none;">
-        <option value="zh-CN-XiaoxiaoNeural">晓晓（自然女声·在线）</option>
-        <option value="zh-CN-YunxiNeural">云希（阳光男声·在线）</option>
-        <option value="zh-CN-YunyangNeural">云扬（沉稳男声·在线）</option>
-        <option value="zh-CN-XiaoyiNeural">晓伊（活泼女声·在线）</option>
-        <option value="zh-CN-YunjianNeural">云健（运动男声·在线）</option>
-        <option value="local:Microsoft Xiaoxiao (Natural)">晓晓·本地自然音（离线）</option>
-        <option value="local:Microsoft Yunxi (Natural)">云希·本地自然音（离线）</option>
-      </select>
-      <select id="sel-rate" style="flex:0 0 70px;font-size:12px;padding:2px 4px;border:1px solid #ddd;border-radius:6px;background:#fff;outline:none;">
-        <option value="-2">很慢</option>
-        <option value="-1">慢</option>
-        <option value="0" selected>正常</option>
-        <option value="1">快</option>
-        <option value="2">很快</option>
-      </select>
-      <select id="sel-pitch" style="flex:0 0 70px;font-size:12px;padding:2px 4px;border:1px solid #ddd;border-radius:6px;background:#fff;outline:none;">
-        <option value="low">低沉</option>
-        <option value="medium" selected>适中</option>
-        <option value="high">偏高</option>
-      </select>
-    </div>
-    <div style="border-top:1px solid #eee;padding:6px 2px;margin-top:4px;">
-      <div style="font-size:11px;color:#999;margin-bottom:4px;">跳过注入的应用（不注入 Ctrl+C）</div>
-      <select id="skip-select" style="width:100%;font-size:11px;padding:4px 6px;border:1px solid #ddd;border-radius:6px;background:#fff;outline:none;color:#666;">
+
+    <!-- 跳过注入的应用 -->
+    <div class="pcard">
+      <div class="pcard-title">跳过注入的应用</div>
+      <div class="field-label">不注入 Ctrl+C</div>
+      <select id="skip-select" class="sel sel-full">
         <option value="">（暂无跳过的应用）</option>
       </select>
-      <div class="panel-row" style="gap:4px;margin:6px 0 0;">
-        <button class="p-btn" id="p-skip-pick" style="font-size:11px;padding:6px 4px;">+ 选取窗口</button>
-        <button class="p-btn danger" id="p-skip-release" style="font-size:11px;padding:6px 4px;">释放所选</button>
+      <div class="btn-row" style="gap:4px;">
+        <button class="p-btn mini-btn" id="p-skip-pick">+ 选取窗口</button>
+        <button class="p-btn mini-btn danger" id="p-skip-release">释放所选</button>
       </div>
     </div>
-    <div style="border-top:1px solid #eee;padding:6px 2px;margin-top:4px;">
-      <div style="font-size:11px;color:#999;margin-bottom:4px;">跳过抓取的应用（不读取该窗口文字）</div>
-      <select id="grab-skip-select" style="width:100%;font-size:11px;padding:4px 6px;border:1px solid #ddd;border-radius:6px;background:#fff;outline:none;color:#666;">
+
+    <!-- 跳过抓取的应用 -->
+    <div class="pcard">
+      <div class="pcard-title">跳过抓取的应用</div>
+      <div class="field-label">不读取该窗口文字</div>
+      <select id="grab-skip-select" class="sel sel-full">
         <option value="">（暂无跳过的应用）</option>
       </select>
-      <div class="panel-row" style="gap:4px;margin:6px 0 0;">
-        <button class="p-btn" id="p-grab-skip-pick" style="font-size:11px;padding:6px 4px;">+ 选取窗口</button>
-        <button class="p-btn danger" id="p-grab-skip-release" style="font-size:11px;padding:6px 4px;">释放所选</button>
+      <div class="btn-row" style="gap:4px;">
+        <button class="p-btn mini-btn" id="p-grab-skip-pick">+ 选取窗口</button>
+        <button class="p-btn mini-btn danger" id="p-grab-skip-release">释放所选</button>
       </div>
     </div>
-    <div style="border-top:1px solid #eee;padding:6px 2px;margin-top:4px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
-        <span style="font-size:11px;color:#999;">模型穿透</span>
-        <button class="p-btn toggle" id="p-ct" style="font-size:11px;padding:4px 10px;">穿透</button>
+
+    <!-- 窗口 -->
+    <div class="pcard">
+      <div class="pcard-title">窗口</div>
+
+      <div class="seg-row">
+        <span class="field-label" style="margin:0;">模型穿透</span>
+        <button class="p-btn toggle" id="p-ct" style="flex:0 0 auto;padding:4px 12px;font-size:11px;">穿透</button>
       </div>
-      <div style="font-size:11px;color:#999;margin:4px 0 2px;">快捷键（点击后按下新组合键）</div>
-      <div style="display:flex;gap:4px;">
-        <button class="p-btn" id="p-hk-panel" style="flex:1;font-size:10px;padding:5px 2px;">面板:Ctrl+Shift+T</button>
-        <button class="p-btn" id="p-hk-ct" style="flex:1;font-size:10px;padding:5px 2px;">穿透:Ctrl+Shift+X</button>
+
+      <div class="field-label">快捷键（点击后按下新组合键）</div>
+      <div class="hk-line">
+        <button class="p-btn hk-btn" id="p-hk-panel">面板:Ctrl+Shift+T</button>
+        <button class="p-btn hk-btn" id="p-hk-ct">穿透:Ctrl+Shift+X</button>
       </div>
-      <div style="border-top:1px solid #f0f0f0;margin:6px 0 4px;"></div>
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
-        <span style="font-size:11px;color:#999;">悬浮框背景</span>
-      </div>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <input type="color" id="p-fl-color" value="#1e2026" title="背景色"
-               style="width:26px;height:20px;padding:0;border:1px solid #ddd;border-radius:4px;background:#fff;cursor:pointer;">
-        <input type="range" id="p-fl-op" min="0" max="100" value="84" title="透明度"
-               style="flex:1;height:4px;accent-color:#1677ff;">
-        <span id="p-fl-op-lb" style="font-size:10px;color:#999;width:30px;text-align:right;">84%</span>
+    </div>
+
+    <!-- 悬浮框 -->
+    <div class="pcard">
+      <div class="pcard-title">悬浮框</div>
+      <div class="field-label">背景颜色 / 透明度</div>
+      <div class="ctrl-row">
+        <input type="color" id="p-fl-color" value="#1e2026" title="背景色">
+        <input type="range" id="p-fl-op" min="0" max="100" value="84" title="透明度">
+        <span id="p-fl-op-lb" class="op-lbl">84%</span>
       </div>
     </div>
   </div>
   <div class="panel-foot">
     <button class="p-btn danger" id="p-quit">退出</button>
   </div>
+</div>
+<div id="panel-ctx" class="ctx-hidden">
+  <div class="ctx-item" id="ctx-hide">隐藏面板</div>
 </div>
 <script>
 window.__TAURI__ && window.__TAURI__.core && document.currentScript;

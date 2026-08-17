@@ -383,7 +383,7 @@ fn show_panel(app: tauri::AppHandle) {
         app.get_webview_window("panel"),
     ) {
         if let Ok(pos) = main.outer_position() {
-            let win_size = panel.inner_size().ok().unwrap_or(tauri::PhysicalSize::new(280, 400));
+            let win_size = panel.inner_size().ok().unwrap_or(tauri::PhysicalSize::new(420, 600));
             let (cx, cy) = clamp_to_work_area(&app, pos.x + 260, pos.y + 20, win_size.width, win_size.height);
             let _ = panel.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(cx, cy)));
         }
@@ -823,7 +823,7 @@ fn toggle_panel(app: &tauri::AppHandle) {
         st.1 = false;
     } else {
         if let Ok(pos) = main.outer_position() {
-            let win_size = panel.inner_size().ok().unwrap_or(tauri::PhysicalSize::new(280, 400));
+            let win_size = panel.inner_size().ok().unwrap_or(tauri::PhysicalSize::new(420, 600));
             let (cx, cy) = clamp_to_work_area(app, pos.x + 260, pos.y + 20, win_size.width, win_size.height);
             let _ = panel.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(cx, cy)));
         }
@@ -1410,7 +1410,7 @@ apply_hotkeys(app.handle(), &settings.hotkey_panel, &settings.hotkey_ct);
                             panel_ready_app_handle.get_webview_window("panel"),
                         ) {
                             if let Ok(pos) = main.outer_position() {
-                                let win_size = panel.inner_size().ok().unwrap_or(tauri::PhysicalSize::new(280, 400));
+                                let win_size = panel.inner_size().ok().unwrap_or(tauri::PhysicalSize::new(420, 600));
                                 let (cx, cy) = clamp_to_work_area(&panel_ready_app_handle, pos.x + 260, pos.y + 20, win_size.width, win_size.height);
                                 let _ = panel.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(cx, cy)));
                             }

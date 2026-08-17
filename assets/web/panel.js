@@ -550,3 +550,29 @@ function persistFloaterStyle() {
     showHint("读取设置失败：" + err.message, true);
   }
 })();
+
+// ---- 右键菜单：隐藏面板 ----
+const ctxMenu = $("panel-ctx");
+document.addEventListener("contextmenu", (e) => {
+  // 文本框/输入框内保留系统右键菜单（粘贴等），其余区域弹出隐藏菜单
+  if (e.target.closest("textarea, input, select")) return;
+  e.preventDefault();
+  if (!ctxMenu) return;
+  const w = 130, h = 36;
+  ctxMenu.style.left = Math.min(e.clientX, window.innerWidth - w - 4) + "px";
+  ctxMenu.style.top = Math.min(e.clientY, window.innerHeight - h - 4) + "px";
+  ctxMenu.classList.remove("ctx-hidden");
+});
+document.addEventListener("mousedown", (e) => {
+  if (ctxMenu && e.target !== ctxMenu && !ctxMenu.contains(e.target)) {
+    ctxMenu.classList.add("ctx-hidden");
+  }
+});
+document.addEventListener("blur", () => { if (ctxMenu) ctxMenu.classList.add("ctx-hidden"); });
+const ctxHide = $("ctx-hide");
+if (ctxHide) {
+  ctxHide.addEventListener("click", () => {
+    if (ctxMenu) ctxMenu.classList.add("ctx-hidden");
+    if (window.__TAURI__?.event) window.__TAURI__.event.emit("panel-closing", {});
+  });
+}
