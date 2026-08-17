@@ -8,6 +8,7 @@ __pycache__/
 # ---- 运行时生成的用户配置（改音色/语速会变化）----
 settings.json
 sidecar/settings_app.json
+sidecar/grab_skip_apps.json
 
 # ---- 日志 / 调试 / 截图 / 临时脚本 ----
 *.log

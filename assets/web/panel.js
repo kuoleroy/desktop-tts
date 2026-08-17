@@ -238,7 +238,8 @@ $("p-stop").addEventListener("click", () => {
   if (window.__TAURI__?.event) {
     window.__TAURI__.event.emit("stop-audio", {});
   }
-  if (window.__TAURI__?.core && grabActive) {
+  // 停止时无条件关闭抓取（与 grabActive 是否命中无关），确保与后台状态彻底互斥
+  if (window.__TAURI__?.core) {
     grabActive = false;
     window.__TAURI__.core.invoke("toggle_grab", { on: false }).catch(() => {});
   }
@@ -371,6 +372,76 @@ $("p-skip-release").addEventListener("click", async () => {
     showHint("释放失败：" + err.message, true);
   }
 });
+
+// ---- 跳过抓取的应用（不读取该窗口文字）----
+
+async function refreshGrabSkipList() {
+  if (!window.__TAURI__?.core) { setTimeout(refreshGrabSkipList, 1000); return; }
+  try {
+    const data = await window.__TAURI__.core.invoke("get_grab_skip_apps");
+    const classes = data.grab_skip_window_classes || [];
+    const exes = data.grab_skip_exe_names || [];
+    const sel = $("grab-skip-select");
+    if (!sel) return;
+    const opts = [];
+    classes.forEach((c) => {
+      opts.push('<option value="class:' + c.replace(/"/g, "&quot;") + '">类名 ' + c + '</option>');
+    });
+    exes.forEach((e) => {
+      opts.push('<option value="exe:' + e.replace(/"/g, "&quot;") + '">程序 ' + e + '</option>');
+    });
+    sel.innerHTML = opts.length ? opts.join("") : '<option value="">（暂无跳过的应用）</option>';
+  } catch (err) {
+    showHint("读取抓取跳过列表失败：" + err.message, true);
+  }
+}
+
+$("p-grab-skip-pick").addEventListener("click", async () => {
+  if (!window.__TAURI__?.core) return;
+  showHint("请把鼠标移到要跳过抓取的软件窗口上，等待2秒...");
+  await new Promise((r) => setTimeout(r, 2000));
+  try {
+    const info = await window.__TAURI__.core.invoke("get_window_at");
+    const cls = (info.class || "").trim();
+    const exe = (info.exe || "").trim();
+    if (cls === "Tauri Window" || cls === "Floater" || cls === "ttsGrabHidden" || cls === "Crop") {
+      showHint("不能跳过本应用窗口", true);
+      return;
+    }
+    if (cls) {
+      await window.__TAURI__.core.invoke("add_grab_skip_app", { appType: "class", name: cls });
+      showHint("已添加：" + cls);
+    } else if (exe) {
+      await window.__TAURI__.core.invoke("add_grab_skip_app", { appType: "exe", name: exe });
+      showHint("已添加：" + exe);
+    } else {
+      showHint("未检测到有效窗口", true);
+      return;
+    }
+    refreshGrabSkipList();
+  } catch (err) {
+    showHint("选取失败：" + err.message, true);
+  }
+});
+
+$("p-grab-skip-release").addEventListener("click", async () => {
+  const sel = $("grab-skip-select");
+  if (!sel) return;
+  const v = sel.value;
+  if (!v) { showHint("请先选择要释放的应用", true); return; }
+  const i = v.indexOf(":");
+  const type = v.slice(0, i) === "exe" ? "exe" : "class";
+  const name = v.slice(i + 1);
+  try {
+    await window.__TAURI__.core.invoke("remove_grab_skip_app", { appType: type, name });
+    showHint("已释放：" + name);
+    refreshGrabSkipList();
+  } catch (err) {
+    showHint("释放失败：" + err.message, true);
+  }
+});
+
+setTimeout(refreshGrabSkipList, 800);
 
 // 面板加载时刷新一次跳过列表（内部自带重试，不依赖 __TAURI__ 注入时序）
 setTimeout(refreshSkipList, 800);

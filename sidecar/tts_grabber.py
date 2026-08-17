@@ -77,6 +77,44 @@ def _load_skip_config():
         SKIP_CONFIG["skip_window_classes"] = ["ConsoleWindowClass", "CASCADIA_HOSTING_WINDOW_CLASS"]
         SKIP_CONFIG["skip_exe_names"] = []
 
+# ---- 跳过抓取配置（grab_skip_apps.json）：仅影响抓取读取，不影响注入 Ctrl+C ----
+GRAB_SKIP_CONFIG = {"grab_skip_window_classes": [], "grab_skip_exe_names": []}
+
+def _load_grab_skip_config():
+    """从 grab_skip_apps.json 加载抓取跳过列表。"""
+    try:
+        import os
+        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "grab_skip_apps.json")
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        GRAB_SKIP_CONFIG["grab_skip_window_classes"] = data.get("grab_skip_window_classes", [])
+        GRAB_SKIP_CONFIG["grab_skip_exe_names"] = data.get("grab_skip_exe_names", [])
+        dbg("grab skip config loaded: classes=%s exes=%s" % (
+            GRAB_SKIP_CONFIG["grab_skip_window_classes"], GRAB_SKIP_CONFIG["grab_skip_exe_names"]))
+    except Exception as e:
+        dbg("grab skip config load failed: %r, using defaults" % e)
+        GRAB_SKIP_CONFIG["grab_skip_window_classes"] = []
+        GRAB_SKIP_CONFIG["grab_skip_exe_names"] = []
+
+def _is_grab_skip_hwnd(hwnd):
+    """检查窗口是否命中「跳过抓取」列表（仅影响抓取读取，不注入 Ctrl+C 照旧用注入列表）。"""
+    if not hwnd:
+        return True
+    try:
+        user32 = ctypes.windll.user32
+        user32.GetClassNameW.restype = ctypes.c_int
+        user32.GetClassNameW.argtypes = [ctypes.wintypes.HWND, ctypes.c_wchar_p, ctypes.c_int]
+        cls = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(hwnd, cls, 256)
+        if cls.value in GRAB_SKIP_CONFIG.get("grab_skip_window_classes", []):
+            return True
+        exe = _fg_process_exe(hwnd)
+        if exe and exe in GRAB_SKIP_CONFIG.get("grab_skip_exe_names", []):
+            return True
+        return False
+    except Exception:
+        return True  # 取不到信息时保守跳过抓取
+
 _OUT_LOCK = threading.Lock()
 
 
@@ -89,6 +127,7 @@ def dbg(msg):
 
 # 启动时加载一次（必须在 dbg() 定义之后）
 _load_skip_config()
+_load_grab_skip_config()
 
 
 def out(obj):
@@ -1196,6 +1235,16 @@ def main():
              "x": anchor[0], "y": anchor[1]})
 
     def _do_grab(source):
+        # 跳过抓取的应用：前台窗口命中 grab_skip_apps.json 则不抓
+        try:
+            fg = ctypes.windll.user32.GetForegroundWindow()
+            if _is_grab_skip_hwnd(fg):
+                dbg("  [grab] skipped (fg is grab-skip window)")
+                pending["element"] = None
+                pending["dirty"] = False
+                return
+        except Exception:
+            pass
         anchor = _cursor_pos()
         text = ''
         if pending["element"] is not None:
@@ -1264,6 +1313,15 @@ def main():
 
     def _selread_job():
         """点按钮主动读取前台窗口选中文本（可读长文本）。UIA 扫描 + Ctrl+C 兜底。"""
+        # 跳过抓取的应用：前台窗口命中 grab_skip_apps.json 则不读取、不注入 Ctrl+C
+        try:
+            fg = ctypes.windll.user32.GetForegroundWindow()
+            if _is_grab_skip_hwnd(fg):
+                dbg("  [selread] skipped (fg is grab-skip window)")
+                out({"id": 0, "ok": False, "grab": False, "error": "grab skip window"})
+                return
+        except Exception:
+            pass
         text, rect = _uia_scan_selection()
         source = "selread"
         anchor = None
@@ -1357,9 +1415,10 @@ def main():
                 dbg("received clipwatch cmd")
                 _clipwatch_cmd_job()
             elif cmd == "reload_skip":
-                # 面板修改跳过列表后，通知 grabber 热重载配置
+                # 面板修改跳过列表后，通知 grabber 热重载配置（注入+抓取）
                 dbg("received reload_skip cmd")
                 _load_skip_config()
+                _load_grab_skip_config()
 
     threading.Thread(target=_stdin_reader, daemon=True).start()
 

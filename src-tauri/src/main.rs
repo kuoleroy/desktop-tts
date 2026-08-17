@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
 use std::os::windows::process::CommandExt;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use tauri::{Emitter, Listener, Manager};
@@ -44,14 +44,17 @@ struct CommandMessage {
 }
 
 struct SidecarState(Mutex<Option<(Child, std::sync::mpsc::Receiver<bool>, mpsc::Sender<CommandMessage>)>>);
-struct GrabberState(Mutex<Option<(Child, std::sync::mpsc::Receiver<bool>, mpsc::Sender<CommandMessage>)>>);
-struct AppState(Mutex<(AppMode, bool)>);
+struct GrabberState(Mutex<Option<(Child, std::sync::mpsc::Receiver<bool>, mpsc::Sender<CommandMessage>)>>);struct AppState(Mutex<(AppMode, bool)>);
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// 主窗口穿透状态（true=穿透）。Ctrl+Shift+X 切换。
 /// 默认 1 = 穿透（不挡鼠标，可点击桌宠下方窗口）
 static CLICK_THROUGH: AtomicU64 = AtomicU64::new(0); // 临时：默认可交互（不穿透），便于测试
+
+/// 抓取总开关（初始与前端默认一致：开启）。看门狗重启 grabber 时按此状态 arm/disarm，
+/// 避免用户「停止/关闭抓取」后被看门狗强制重新武装。
+static GRAB_ENABLED: AtomicBool = AtomicBool::new(true);
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct SidecarReply {
@@ -314,12 +317,22 @@ fn grabber_cmd_payload(app: &tauri::AppHandle, cmd: &str, payload: &str) {
 /// 前端调用：对指定屏幕区域执行 OCR（全屏框选截图识别）
 #[tauri::command]
 fn ocr_rect(app: tauri::AppHandle, rect: String) {
+    // 总闸：抓取关闭时不执行 OCR 框选识别
+    if !GRAB_ENABLED.load(Ordering::Relaxed) {
+        log_async("[grabber] ocr skipped (grab disabled)".to_string());
+        return;
+    }
     grabber_cmd_payload(&app, "ocr", &rect);
 }
 
 /// 前端调用：点按钮主动读取前台窗口选中文本（可读长文本）
 #[tauri::command]
 fn selread(app: tauri::AppHandle) {
+    // 总闸：抓取关闭（用户「停止」）时不发起读取，避免 grabber 注入 Ctrl+C 劫持复制
+    if !GRAB_ENABLED.load(Ordering::Relaxed) {
+        log_async("[grabber] selread skipped (grab disabled)".to_string());
+        return;
+    }
     grabber_cmd(&app, "selread");
 }
 
@@ -327,6 +340,11 @@ fn selread(app: tauri::AppHandle) {
 /// 用户手动 Ctrl+C 复制文本，脚本据此朗读）
 #[tauri::command]
 fn clipwatch(app: tauri::AppHandle) {
+    // 总闸：抓取关闭时不开启剪贴板监听（避免任何复制行为被它响应）
+    if !GRAB_ENABLED.load(Ordering::Relaxed) {
+        log_async("[grabber] clipwatch skipped (grab disabled)".to_string());
+        return;
+    }
     grabber_cmd(&app, "clipwatch");
 }
 
@@ -348,6 +366,7 @@ fn show_crop(app: tauri::AppHandle) {
 /// 前端调用：开启/关闭抓取（开关式）
 #[tauri::command]
 fn toggle_grab(app: tauri::AppHandle, on: bool) {
+    GRAB_ENABLED.store(on, Ordering::Relaxed);
     grabber_cmd(&app, if on { "arm" } else { "disarm" });
 }
 
@@ -410,6 +429,10 @@ fn clamp_to_work_area(
 
 /// 处理全局选区抓取：显示悬浮框填充文本，隐藏面板（面板退作后台设置），返回观赏态
 fn handle_grab(app: &tauri::AppHandle, text: &str, x: Option<i32>, y: Option<i32>) {
+    // 总闸：抓取关闭（用户「停止」）时不弹朗读悬浮框、不处理抓取
+    if !GRAB_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
     log_async(format!("[{}] grab text ({} chars)", std::process::id(), text.chars().count()));
     // 状态：返回观赏模式（面板隐藏、悬浮框前台）；不设置 st.1，保证 pet-dblclick 可再调出面板
     {
@@ -892,6 +915,76 @@ fn clear_skip_apps(app: tauri::AppHandle) {
     notify_grabber_reload_skip(&app);
 }
 
+// ---- 跳过抓取应用管理（grab_skip_apps.json）：仅影响抓取读取，不影响注入 ----
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+struct GrabSkipConfig {
+    grab_skip_window_classes: Vec<String>,
+    grab_skip_exe_names: Vec<String>,
+}
+
+fn grab_skip_config_path() -> std::path::PathBuf {
+    sidecar_dir().join("grab_skip_apps.json")
+}
+
+fn read_grab_skip_config() -> GrabSkipConfig {
+    let path = grab_skip_config_path();
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn write_grab_skip_config(config: &GrabSkipConfig) {
+    let path = grab_skip_config_path();
+    if let Ok(json) = serde_json::to_string_pretty(config) {
+        let _ = std::fs::write(&path, &json);
+    }
+}
+
+#[tauri::command]
+fn get_grab_skip_apps() -> GrabSkipConfig {
+    read_grab_skip_config()
+}
+
+#[tauri::command]
+fn add_grab_skip_app(app: tauri::AppHandle, app_type: String, name: String) {
+    let mut config = read_grab_skip_config();
+    match app_type.as_str() {
+        "class" => {
+            if !config.grab_skip_window_classes.contains(&name) {
+                config.grab_skip_window_classes.push(name);
+            }
+        }
+        "exe" => {
+            if !config.grab_skip_exe_names.contains(&name) {
+                config.grab_skip_exe_names.push(name.to_lowercase());
+            }
+        }
+        _ => return,
+    }
+    write_grab_skip_config(&config);
+    notify_grabber_reload_skip(&app);
+}
+
+#[tauri::command]
+fn remove_grab_skip_app(app: tauri::AppHandle, app_type: String, name: String) {
+    let mut config = read_grab_skip_config();
+    match app_type.as_str() {
+        "class" => config.grab_skip_window_classes.retain(|c| c != &name),
+        "exe" => config.grab_skip_exe_names.retain(|e| e != &name.to_lowercase()),
+        _ => return,
+    }
+    write_grab_skip_config(&config);
+    notify_grabber_reload_skip(&app);
+}
+
+#[tauri::command]
+fn clear_grab_skip_apps(app: tauri::AppHandle) {
+    write_grab_skip_config(&GrabSkipConfig::default());
+    notify_grabber_reload_skip(&app);
+}
+
 #[tauri::command]
 fn get_fg_window_info() -> serde_json::Value {
     use windows_sys::Win32::Foundation::CloseHandle;
@@ -1052,6 +1145,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             read_text, stop_read, set_voice, set_rate, set_pitch, export_mp3, list_models, model_dir, quit, toggle_grab, show_panel, get_settings, toggle_click_through, get_click_through, ocr_rect, show_crop, selread, clipwatch,
             get_skip_apps, add_skip_app, remove_skip_app, clear_skip_apps, get_fg_window_info, get_window_at,
+            get_grab_skip_apps, add_grab_skip_app, remove_grab_skip_app, clear_grab_skip_apps,
             get_app_settings, set_app_settings, get_click_through, toggle_click_through
         ])
         .on_window_event(|window, event| {
@@ -1362,10 +1456,12 @@ apply_hotkeys(app.handle(), &settings.hotkey_panel, &settings.hotkey_ct);
                             }
                             match spawn_grabber(Arc::clone(&app2)) {
                                 Ok(s) => {
-                                    // 重启后自动武装，保持"选中即弹悬浮框"功能
-                                    let _ = s.2.send(CommandMessage { id: 0, cmd: "arm".into(), payload: String::new() });
+                                    // 重启后按用户设置的抓取开关决定 arm/disarm：
+                                    // 开启则武装（保持"选中即弹悬浮框"），关闭则保持停止
+                                    let cmd = if GRAB_ENABLED.load(Ordering::Relaxed) { "arm" } else { "disarm" };
+                                    let _ = s.2.send(CommandMessage { id: 0, cmd: cmd.into(), payload: String::new() });
                                     *guard = Some(s);
-                                    log_async(format!("[{}] watchdog respawned grabber (armed)", std::process::id()));
+                                    log_async(format!("[{}] watchdog respawned grabber ({})", std::process::id(), cmd));
                                 }
                                 Err(e) => {
                                     log_error(&app2, format!("watchdog grabber respawn failed: {e}"));

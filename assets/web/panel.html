@@ -190,14 +190,24 @@ html, body {
         <option value="high">偏高</option>
       </select>
     </div>
-<div style="border-top:1px solid #eee;padding:6px 2px;margin-top:4px;">
-      <div style="font-size:11px;color:#999;margin-bottom:4px;">跳过注入的应用</div>
+    <div style="border-top:1px solid #eee;padding:6px 2px;margin-top:4px;">
+      <div style="font-size:11px;color:#999;margin-bottom:4px;">跳过注入的应用（不注入 Ctrl+C）</div>
       <select id="skip-select" style="width:100%;font-size:11px;padding:4px 6px;border:1px solid #ddd;border-radius:6px;background:#fff;outline:none;color:#666;">
         <option value="">（暂无跳过的应用）</option>
       </select>
       <div class="panel-row" style="gap:4px;margin:6px 0 0;">
         <button class="p-btn" id="p-skip-pick" style="font-size:11px;padding:6px 4px;">+ 选取窗口</button>
         <button class="p-btn danger" id="p-skip-release" style="font-size:11px;padding:6px 4px;">释放所选</button>
+      </div>
+    </div>
+    <div style="border-top:1px solid #eee;padding:6px 2px;margin-top:4px;">
+      <div style="font-size:11px;color:#999;margin-bottom:4px;">跳过抓取的应用（不读取该窗口文字）</div>
+      <select id="grab-skip-select" style="width:100%;font-size:11px;padding:4px 6px;border:1px solid #ddd;border-radius:6px;background:#fff;outline:none;color:#666;">
+        <option value="">（暂无跳过的应用）</option>
+      </select>
+      <div class="panel-row" style="gap:4px;margin:6px 0 0;">
+        <button class="p-btn" id="p-grab-skip-pick" style="font-size:11px;padding:6px 4px;">+ 选取窗口</button>
+        <button class="p-btn danger" id="p-grab-skip-release" style="font-size:11px;padding:6px 4px;">释放所选</button>
       </div>
     </div>
     <div style="border-top:1px solid #eee;padding:6px 2px;margin-top:4px;">
