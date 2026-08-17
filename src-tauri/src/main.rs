@@ -443,7 +443,7 @@ fn handle_grab(app: &tauri::AppHandle, text: &str, x: Option<i32>, y: Option<i32
     }
     // 移动悬浮框到鼠标/选区位置（在鼠标下方一点，避免遮挡），并收敛到屏幕内
     if let Some(f) = app.get_webview_window("floater") {
-        let win_size = f.inner_size().ok().unwrap_or(tauri::PhysicalSize::new(200, 96));
+        let win_size = f.inner_size().ok().unwrap_or(tauri::PhysicalSize::new(340, 44));
         if let (Some(px), Some(py)) = (x, y) {
             let (cx, cy) = clamp_to_work_area(app, px + 8, py + 12, win_size.width, win_size.height);
             let _ = f.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(cx, cy)));

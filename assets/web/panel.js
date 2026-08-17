@@ -62,12 +62,6 @@ function setActive(id, on) {
   if (btn) btn.classList.toggle("active", !!on);
 }
 
-// 设置暂停/开始按钮文字
-function setPauseLabel(label) {
-  const btn = $("p-pause");
-  if (btn) btn.textContent = label;
-}
-
 // 状态同步：Rust 全局广播 toggle-mode，面板只接收、不猜状态
 // Windows 上 __TAURI__ 注入晚于顶层脚本（tauri #12990），须等就绪
 function whenTauriReady(cb) {
@@ -166,16 +160,14 @@ whenTauriReady(() => {
   window.__TAURI__.event.listen("play-state", (e) => {
     const s = e.payload;
     setActive("p-read", s === "playing");
-    setActive("p-pause", s === "paused");
-    setPauseLabel(s === "paused" ? "开始" : "暂停");
     if (s === "idle") {
       setActive("p-export", false);
-      setPauseLabel("暂停");
-      // 注意：不重置 p-grab —— 抓取是独立开关（启动即 arm），与播放状态无关
     }
   });
 
   // 朗读进度：主窗口广播 frac(0-1) + 当前块内秒数，驱动进度条
+  // （进度条暂不需要，逻辑以注释保留以防误删）
+  /*
   window.__TAURI__.event.listen("read-progress", (e) => {
     const p = e.payload || {};
     const frac = typeof p.frac === "number" ? p.frac : 0;
@@ -191,6 +183,7 @@ whenTauriReady(() => {
     fill.style.width = Math.round(frac * 100) + "%";
     label.textContent = Math.round(frac * 100) + "%";
   });
+  */
 
   // 进入面板时广播就绪（Rust 侧可据此补发状态）
   window.__TAURI__.event.emit("panel-ready", {});
@@ -212,23 +205,10 @@ whenTauriReady(() => {
 // 朗读：读文本区内容（空则用默认句），播放中按钮变蓝
 $("p-read").addEventListener("click", () => {
   setActive("p-read", true);
-  setActive("p-pause", false);
-  setPauseLabel("暂停");
   TTS.read(currentText()).catch((e) => {
     setActive("p-read", false);
     showHint("朗读失败：" + e.message, true);
   });
-});
-
-// 暂停/开始：切换主窗口音频的暂停状态（按钮文字随状态变化）
-$("p-pause").addEventListener("click", () => {
-  if (!$("p-pause").classList.contains("active")) {
-    // 当前是"暂停"，点击后暂停
-    if (window.__TAURI__?.event) window.__TAURI__.event.emit("pause-audio", {});
-  } else {
-    // 当前是"开始"，点击后恢复
-    if (window.__TAURI__?.event) window.__TAURI__.event.emit("resume-audio", {});
-  }
 });
 
 // 停止：广播给主窗口真实停止音频，同时通知 sidecar；并让所有按钮恢复朴素。
@@ -245,8 +225,6 @@ $("p-stop").addEventListener("click", () => {
   }
   setActive("p-read", false);
   setActive("p-export", false);
-  setActive("p-pause", false);
-  setPauseLabel("暂停");
   setActive("p-grab", false);
   showHint("已停止（抓取已关闭）");
 });

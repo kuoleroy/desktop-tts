@@ -11,17 +11,22 @@ html, body {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #fff;
+  background: transparent;
   font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
   user-select: none;
   -webkit-user-select: none;
+}
+body::before {
+  content: ''; position: fixed; inset: 0;
+  background: #fff;
+  border-radius: 14px;
+  pointer-events: none;
 }
 #panel {
   position: absolute;
   inset: 0;
   display: flex;
   flex-direction: column;
-  background: #fff;
   border: 1px solid rgba(0, 0, 0, 0.12);
   border-radius: 14px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
@@ -121,6 +126,7 @@ html, body {
   padding: 8px 10px;
   border-top: 1px solid #eee;
 }
+/* 进度条（暂时隐藏）
 .panel-progress {
   display: flex;
   align-items: center;
@@ -142,9 +148,10 @@ html, body {
   width: 0%;
   background: #1677ff;
   border-radius: 3px;
-  transition: width 0.3s linear;
+  transition: width 0.15s;
 }
-.prog-label { min-width: 60px; text-align: right; }
+.prog-label { white-space: nowrap; min-width: 36px; text-align: right; }
+*/
 </style>
 </head>
 <body>
@@ -156,17 +163,18 @@ html, body {
     </div>
     <div class="panel-row">
       <button class="p-btn" id="p-read">朗读</button>
-      <button class="p-btn" id="p-pause">暂停</button>
       <button class="p-btn" id="p-stop">停止</button>
     </div>
     <div class="panel-row">
       <button class="p-btn" id="p-export">导出 MP3</button>
       <button class="p-btn toggle" id="p-grab">抓取</button>
     </div>
+    <!-- 进度条（暂时隐藏）
     <div class="panel-progress" id="prog-wrap">
       <div class="prog-track"><div class="prog-fill" id="prog-fill"></div></div>
       <span class="prog-label" id="prog-label"></span>
     </div>
+    -->
     <div class="panel-section" style="display:flex;gap:6px;align-items:center;">
       <select id="sel-voice" style="flex:1;font-size:12px;padding:2px 4px;border:1px solid #ddd;border-radius:6px;background:#fff;outline:none;">
         <option value="zh-CN-XiaoxiaoNeural">晓晓（自然女声·在线）</option>

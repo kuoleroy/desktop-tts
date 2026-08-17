@@ -60,9 +60,20 @@ whenTauriReady(() => {
   $("btn-copy").addEventListener("click", async () => {
     try {
       await navigator.clipboard.writeText(currentText);
-      $("btn-copy").textContent = "已复制";
-      setTimeout(() => { $("btn-copy").textContent = "复制"; }, 1200);
     } catch (_) {}
+  });
+
+  // 暂停/继续播放
+  $("btn-pause").addEventListener("click", async () => {
+    const btn = $("btn-pause");
+    const isPaused = btn.classList.contains("active");
+    if (window.__TAURI__?.event) {
+      await window.__TAURI__.event.emit(isPaused ? "resume-audio" : "pause-audio", {});
+    }
+    btn.classList.toggle("active");
+    $("pause-icon").style.display = isPaused ? "" : "none";
+    $("play-icon").style.display = isPaused ? "none" : "";
+    btn.title = isPaused ? "暂停" : "继续";
   });
 
   // 打开设置：呼出面板（后台设置），隐藏悬浮框
