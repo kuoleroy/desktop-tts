@@ -503,6 +503,39 @@ async function saveHk(key, str) {
 bindHkCapture("p-hk-panel", "hotkey_panel");
 bindHkCapture("p-hk-ct", "hotkey_ct");
 
+// ---- 悬浮框背景：颜色 + 透明度 ----
+function setFloaterStyleUI(s) {
+  const flc = $("p-fl-color"), flo = $("p-fl-op"), fol = $("p-fl-op-lb");
+  if (!flc || !flo) return;
+  flc.value = /^#[0-9a-fA-F]{6}$/.test(s.floater_color) ? s.floater_color : "#1e2026";
+  const op = (typeof s.floater_opacity === "number" && s.floater_opacity >= 0 && s.floater_opacity <= 1)
+    ? s.floater_opacity : 0.84;
+  flo.value = Math.round(op * 100);
+  if (fol) fol.textContent = flo.value + "%";
+}
+
+let flStyleTimer = null;
+function persistFloaterStyle() {
+  const flc = $("p-fl-color"), flo = $("p-fl-op"), fol = $("p-fl-op-lb");
+  if (!flc || !flo) return;
+  if (fol) fol.textContent = flo.value + "%";
+  clearTimeout(flStyleTimer);
+  flStyleTimer = setTimeout(async () => {
+    if (!window.__TAURI__?.core) return;
+    try {
+      const s = await window.__TAURI__.core.invoke("get_app_settings");
+      s.floater_color = flc.value;
+      s.floater_opacity = (Math.min(100, Math.max(0, parseInt(flo.value, 10) || 0))) / 100;
+      await window.__TAURI__.core.invoke("set_app_settings", { settings: s });
+    } catch (_) {}
+  }, 300);
+}
+(function bindFloaterStyleUI() {
+  const flc = $("p-fl-color"), flo = $("p-fl-op");
+  if (flc) flc.addEventListener("input", persistFloaterStyle);
+  if (flo) flo.addEventListener("input", persistFloaterStyle);
+})();
+
 // 启动时读取设置：同步穿透开关与快捷键标签
 (async function initSettings() {
   if (!window.__TAURI__?.core) return;
@@ -512,6 +545,7 @@ bindHkCapture("p-hk-ct", "hotkey_ct");
     const p = $("p-hk-panel"), c = $("p-hk-ct");
     if (p) { p.dataset.orig = s.hotkey_panel || ""; p.textContent = "面板:" + hkFriendly(s.hotkey_panel); }
     if (c) { c.dataset.orig = s.hotkey_ct || ""; c.textContent = "穿透:" + hkFriendly(s.hotkey_ct); }
+    setFloaterStyleUI(s);
   } catch (err) {
     showHint("读取设置失败：" + err.message, true);
   }

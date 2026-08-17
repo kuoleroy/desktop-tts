@@ -710,7 +710,14 @@ struct AppSettings {
     click_through: bool,
     hotkey_panel: String,
     hotkey_ct: String,
+    #[serde(default = "default_floater_color")]
+    floater_color: String,
+    #[serde(default = "default_floater_opacity")]
+    floater_opacity: f64,
 }
+
+fn default_floater_color() -> String { "#1e2026".into() }
+fn default_floater_opacity() -> f64 { 0.84 }
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -718,6 +725,8 @@ impl Default for AppSettings {
             click_through: false,
             hotkey_panel: "Ctrl+Shift+T".into(),
             hotkey_ct: "Ctrl+Shift+X".into(),
+            floater_color: default_floater_color(),
+            floater_opacity: default_floater_opacity(),
         }
     }
 }
@@ -880,6 +889,10 @@ fn set_app_settings(app: tauri::AppHandle, settings: AppSettings) -> Result<(), 
     }
     let _ = app.emit("click-through-changed", ct);
     apply_hotkeys(&app, &settings.hotkey_panel, &settings.hotkey_ct);
+    let _ = app.emit("floater-style-changed", serde_json::json!({
+        "color": settings.floater_color,
+        "opacity": settings.floater_opacity,
+    }));
     Ok(())
 }
 
