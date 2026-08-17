@@ -354,12 +354,6 @@ $("p-skip-pick").addEventListener("click", async () => {
   }
 });
 
-// 刷新按钮
-$("p-skip-refresh").addEventListener("click", () => {
-  refreshSkipList();
-  showHint("已刷新");
-});
-
 // 释放所选：删除下拉框中选中的跳过应用
 $("p-skip-release").addEventListener("click", async () => {
   const sel = $("skip-select");
@@ -380,3 +374,96 @@ $("p-skip-release").addEventListener("click", async () => {
 
 // 面板加载时刷新一次跳过列表（内部自带重试，不依赖 __TAURI__ 注入时序）
 setTimeout(refreshSkipList, 800);
+
+// ---- 模型穿透 + 快捷键设置 ----
+
+function ctLabel(on) { return on ? "穿透中" : "可交互"; }
+function setCtState(on) {
+  setActive("p-ct", !!on);
+  const b = $("p-ct");
+  if (b) b.textContent = ctLabel(on);
+}
+
+// 穿透开关：点击切换（写回设置 + 广播）
+$("p-ct").addEventListener("click", async () => {
+  try {
+    const next = await window.__TAURI__.core.invoke("toggle_click_through");
+    setCtState(next);
+    showHint(next ? "已开启穿透（不挡鼠标）" : "已关闭穿透（可交互）");
+  } catch (err) {
+    showHint("切换失败：" + err.message, true);
+  }
+});
+
+// 其他入口切换穿透时同步按钮状态（Rust 广播）
+window.__TAURI__.event?.listen("click-through-changed", (e) => {
+  setCtState(!!e.payload);
+});
+
+// 快捷键捕获：点击按钮 → 按新组合键 → 保存到设置
+let hkCapture = null; // { el, key }
+function hkFriendly(s) {
+  return s.replace(/Key([A-Z])/g, "$1").replace(/Digit(\d)/g, "$1");
+}
+function bindHkCapture(btnId, key) {
+  $(btnId).addEventListener("click", () => {
+    hkCapture = { el: $(btnId), key };
+    $(btnId).textContent = "按新组合键...";
+  });
+}
+document.addEventListener("keydown", (e) => {
+  if (!hkCapture) return;
+  e.preventDefault();
+  if (e.key === "Escape") { $(hkCapture.el.id).textContent = hkFriendly($(hkCapture.el.id).dataset.orig || ""); hkCapture = null; return; }
+  if (e.key === "Control" || e.key === "Shift" || e.key === "Alt" || e.key === "Meta") return;
+  const mods = [];
+  if (e.ctrlKey) mods.push("Ctrl");
+  if (e.shiftKey) mods.push("Shift");
+  if (e.altKey) mods.push("Alt");
+  let key;
+  if (e.code.startsWith("Key")) key = e.code.slice(3);
+  else if (e.code.startsWith("Digit")) key = e.code.slice(5);
+  else if (/^F\d+$/.test(e.code)) key = e.code;
+  else {
+    const map = { Space: "Space", Enter: "Enter", Escape: "Escape", Tab: "Tab", Backspace: "Backspace", Delete: "Delete", Insert: "Insert", Home: "Home", End: "End", PageUp: "PageUp", PageDown: "PageDown", ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right" };
+    key = map[e.code];
+  }
+  if (!key) return;
+  const combos = mods.concat([key]);
+  if (combos.length < 2) { $(hkCapture.el.id).textContent = "需含修饰键"; return; }
+  const str = combos.join("+");
+  const el = hkCapture.el;
+  const k = hkCapture.key;
+  hkCapture = null;
+  saveHk(k, str);
+  el.dataset.orig = str;
+  el.textContent = (k === "hotkey_panel" ? "面板:" : "穿透:") + hkFriendly(str);
+  showHint("已设置" + (k === "hotkey_panel" ? "面板" : "穿透") + "快捷键：" + hkFriendly(str));
+});
+
+async function saveHk(key, str) {
+  try {
+    const s = await window.__TAURI__.core.invoke("get_app_settings");
+    s[key] = str;
+    await window.__TAURI__.core.invoke("set_app_settings", { settings: s });
+  } catch (err) {
+    showHint("保存快捷键失败：" + err.message, true);
+  }
+}
+
+bindHkCapture("p-hk-panel", "hotkey_panel");
+bindHkCapture("p-hk-ct", "hotkey_ct");
+
+// 启动时读取设置：同步穿透开关与快捷键标签
+(async function initSettings() {
+  if (!window.__TAURI__?.core) return;
+  try {
+    const s = await window.__TAURI__.core.invoke("get_app_settings");
+    setCtState(!!s.click_through);
+    const p = $("p-hk-panel"), c = $("p-hk-ct");
+    if (p) { p.dataset.orig = s.hotkey_panel || ""; p.textContent = "面板:" + hkFriendly(s.hotkey_panel); }
+    if (c) { c.dataset.orig = s.hotkey_ct || ""; c.textContent = "穿透:" + hkFriendly(s.hotkey_ct); }
+  } catch (err) {
+    showHint("读取设置失败：" + err.message, true);
+  }
+})();

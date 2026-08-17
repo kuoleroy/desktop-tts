@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use tauri::{Emitter, Listener, Manager};
-use tauri_plugin_global_shortcut::GlobalShortcutExt;
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers};
 
 static REGISTERED_EVENTS: std::sync::LazyLock<Mutex<HashSet<&'static str>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashSet::new()));
@@ -619,6 +619,172 @@ fn get_click_through() -> bool {
     CLICK_THROUGH.load(Ordering::Relaxed) != 0
 }
 
+// ---- 应用设置：穿透状态 + 快捷键（持久化到 sidecar/settings_app.json）----
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct AppSettings {
+    click_through: bool,
+    hotkey_panel: String,
+    hotkey_ct: String,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            click_through: false,
+            hotkey_panel: "Ctrl+Shift+T".into(),
+            hotkey_ct: "Ctrl+Shift+X".into(),
+        }
+    }
+}
+
+fn app_settings_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("sidecar")
+        .join("settings_app.json")
+}
+
+fn load_app_settings() -> AppSettings {
+    std::fs::read_to_string(app_settings_path())
+        .ok()
+        .and_then(|s| serde_json::from_str::<AppSettings>(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_app_settings(s: &AppSettings) {
+    if let Ok(json) = serde_json::to_string_pretty(s) {
+        let _ = std::fs::write(app_settings_path(), json);
+    }
+}
+
+/// 解析形如 "Ctrl+Shift+X" 的快捷键字符串 → (Modifiers, Code)。返回 None 表示无法解析。
+fn parse_shortcut(s: &str) -> Option<(Modifiers, Code)> {
+    let parts: Vec<&str> = s.split('+').map(|p| p.trim()).collect();
+    let (key, mods) = parts.split_last()?;
+    let mut m = Modifiers::empty();
+    for p in mods {
+        m |= match p.to_lowercase().as_str() {
+            "ctrl" | "control" => Modifiers::CONTROL,
+            "shift" => Modifiers::SHIFT,
+            "alt" => Modifiers::ALT,
+            "super" | "win" | "cmd" => Modifiers::SUPER,
+            _ => return None,
+        };
+    }
+    let code = parse_code(key.trim())?;
+    Some((m, code))
+}
+
+fn parse_code(k: &str) -> Option<Code> {
+    use Code::*;
+    if k.len() == 1 && k.as_bytes()[0].is_ascii_alphabetic() {
+        let c = k.to_ascii_uppercase();
+        return Some(match c.as_str() {
+            "A" => KeyA, "B" => KeyB, "C" => KeyC, "D" => KeyD, "E" => KeyE, "F" => KeyF,
+            "G" => KeyG, "H" => KeyH, "I" => KeyI, "J" => KeyJ, "K" => KeyK, "L" => KeyL,
+            "M" => KeyM, "N" => KeyN, "O" => KeyO, "P" => KeyP, "Q" => KeyQ, "R" => KeyR,
+            "S" => KeyS, "T" => KeyT, "U" => KeyU, "V" => KeyV, "W" => KeyW, "X" => KeyX,
+            "Y" => KeyY, "Z" => KeyZ, _ => return None,
+        });
+    }
+    Some(match k.to_lowercase().as_str() {
+        "space" => Space, "enter" => Enter, "escape" | "esc" => Escape, "tab" => Tab,
+        "backspace" => Backspace, "delete" => Delete, "insert" => Insert, "home" => Home,
+        "end" => End, "pageup" => PageUp, "pagedown" => PageDown,
+        "f1" => F1, "f2" => F2, "f3" => F3, "f4" => F4, "f5" => F5, "f6" => F6,
+        "f7" => F7, "f8" => F8, "f9" => F9, "f10" => F10, "f11" => F11, "f12" => F12,
+        "f13" => F13, "f14" => F14, "f15" => F15, "f16" => F16,
+        "up" => ArrowUp, "down" => ArrowDown, "left" => ArrowLeft, "right" => ArrowRight,
+        "0" => Digit0, "1" => Digit1, "2" => Digit2, "3" => Digit3, "4" => Digit4,
+        "5" => Digit5, "6" => Digit6, "7" => Digit7, "8" => Digit8, "9" => Digit9,
+        _ => return None,
+    })
+}
+
+/// 面板显示/隐藏切换（观赏 ↔ 交互）
+fn toggle_panel(app: &tauri::AppHandle) {
+    let app_state = app.state::<AppState>();
+    let mut st = app_state.0.lock().unwrap();
+    let Some(panel) = app.get_webview_window("panel") else { return };
+    let Some(main) = app.get_webview_window("main") else { return };
+    if st.1 {
+        let _ = panel.hide();
+        st.0 = AppMode::Watch;
+        let _ = app.emit("toggle-mode", "watch");
+        log_async("emit toggle-mode watch".into());
+        st.1 = false;
+    } else {
+        if let Ok(pos) = main.outer_position() {
+            let win_size = panel.inner_size().ok().unwrap_or(tauri::PhysicalSize::new(280, 400));
+            let (cx, cy) = clamp_to_work_area(app, pos.x + 260, pos.y + 20, win_size.width, win_size.height);
+            let _ = panel.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(cx, cy)));
+        }
+        let _ = panel.show();
+        let _ = panel.set_focus();
+        st.0 = AppMode::Interact;
+        st.1 = true;
+        let _ = app.emit("toggle-mode", "interact");
+        log_async("emit toggle-mode interact".into());
+    }
+}
+
+/// 穿透/可交互切换（true=穿透，不挡鼠标）
+fn toggle_ct(app: &tauri::AppHandle) {
+    let cur = CLICK_THROUGH.load(Ordering::Relaxed) != 0;
+    let next = !cur;
+    CLICK_THROUGH.store(next as u64, Ordering::Relaxed);
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.set_ignore_cursor_events(next);
+    }
+    log_async(format!("hotkey: click-through -> {}", next));
+    let _ = app.emit("click-through-changed", next);
+}
+
+/// 应用设置中的两个快捷键：先注销全部再按配置注册。
+fn apply_hotkeys(app: &tauri::AppHandle, panel_shortcut: &str, ct_shortcut: &str) {
+    let _ = app.global_shortcut().unregister_all();
+    use tauri_plugin_global_shortcut::{Shortcut, ShortcutState};
+    if let Some((m, c)) = parse_shortcut(panel_shortcut) {
+        let shortcut = Shortcut::new(Some(m), c);
+        let _ = app.global_shortcut().on_shortcut(shortcut, move |app, _s, event| {
+            if event.state() != ShortcutState::Pressed { return; }
+            toggle_panel(&app);
+        });
+        log_async(format!("hotkey panel registered: {}", panel_shortcut));
+    } else {
+        log_async(format!("hotkey panel invalid: {}", panel_shortcut));
+    }
+    if let Some((m, c)) = parse_shortcut(ct_shortcut) {
+        let shortcut = Shortcut::new(Some(m), c);
+        let _ = app.global_shortcut().on_shortcut(shortcut, move |app, _s, event| {
+            if event.state() != ShortcutState::Pressed { return; }
+            toggle_ct(&app);
+        });
+        log_async(format!("hotkey ct registered: {}", ct_shortcut));
+    } else {
+        log_async(format!("hotkey ct invalid: {}", ct_shortcut));
+    }
+}
+
+#[tauri::command]
+fn get_app_settings() -> AppSettings {
+    load_app_settings()
+}
+
+#[tauri::command]
+fn set_app_settings(app: tauri::AppHandle, settings: AppSettings) -> Result<(), String> {
+    save_app_settings(&settings);
+    let ct = settings.click_through;
+    CLICK_THROUGH.store(ct as u64, Ordering::Relaxed);
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.set_ignore_cursor_events(ct);
+    }
+    let _ = app.emit("click-through-changed", ct);
+    apply_hotkeys(&app, &settings.hotkey_panel, &settings.hotkey_ct);
+    Ok(())
+}
+
 #[tauri::command]
 fn quit(app: tauri::AppHandle) {
     // 关闭 sidecar 与 grabber 子进程，避免残留孤儿 python
@@ -885,7 +1051,8 @@ fn main() {
         .manage(AppState(Mutex::new((AppMode::Watch, false))))
         .invoke_handler(tauri::generate_handler![
             read_text, stop_read, set_voice, set_rate, set_pitch, export_mp3, list_models, model_dir, quit, toggle_grab, show_panel, get_settings, toggle_click_through, get_click_through, ocr_rect, show_crop, selread, clipwatch,
-            get_skip_apps, add_skip_app, remove_skip_app, clear_skip_apps, get_fg_window_info, get_window_at
+            get_skip_apps, add_skip_app, remove_skip_app, clear_skip_apps, get_fg_window_info, get_window_at,
+            get_app_settings, set_app_settings, get_click_through, toggle_click_through
         ])
         .on_window_event(|window, event| {
             match event {
@@ -902,8 +1069,6 @@ fn main() {
             }
         })
         .setup(|app| {
-            use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
-
             let log = |msg: &str| {
                 log_async(format!("[{}] {}", std::process::id(), msg));
             };
@@ -972,71 +1137,16 @@ fn main() {
 log("windows created");
             log(&format!("AppHandle cloned, Arc count: {}", Arc::strong_count(&app_handle)));
 
-            // ---- 全局快捷键 Ctrl+Shift+T：观赏/交互切换 ----
-            let shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyT);
-            let _ = app.global_shortcut().on_shortcut(shortcut, move |app, _s, event| {
-                if event.state() != ShortcutState::Pressed {
-                    return;
-                }
-                let app_state = app.state::<AppState>();
-                let mut st = app_state.0.lock().unwrap();
-                let Some(panel) = app.get_webview_window("panel") else { return };
-                let Some(main) = app.get_webview_window("main") else { return };
-                if st.1 {
-                    let _ = panel.hide();
-                    st.0 = AppMode::Watch;
-                    let _ = app.emit("toggle-mode", "watch");
-                    log("emit toggle-mode watch");
-                    st.1 = false;
-                } else {
-                    if let Ok(pos) = main.outer_position() {
-                        let win_size = panel.inner_size().ok().unwrap_or(tauri::PhysicalSize::new(280, 400));
-                        let (cx, cy) = clamp_to_work_area(&app, pos.x + 260, pos.y + 20, win_size.width, win_size.height);
-                        let _ = panel.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(cx, cy)));
-                    }
-                    let _ = panel.show();
-                    let _ = panel.set_focus();
-                    log(&format!(
-                        "after panel.show(): visible={} inner={:?}",
-                        panel.is_visible().unwrap_or(false),
-                        panel.inner_size().ok()
-                    ));
-                    {
-                        let pa = app.clone();
-                        thread::spawn(move || {
-                            thread::sleep(std::time::Duration::from_millis(1500));
-                            if let Some(p) = pa.get_webview_window("panel") {
-                                log_async(format!(
-                                    "[panel+1.5s] visible={} inner={:?}",
-                                    p.is_visible().unwrap_or(false),
-                                    p.inner_size().ok()
-                                ));
-                            }
-                        });
-                    }
-                    st.0 = AppMode::Interact;
-                    st.1 = true;
-                    let _ = app.emit("toggle-mode", "interact");
-                    log("emit toggle-mode interact");
-                }
-            });
-
-            // ---- 全局快捷键 Ctrl+Shift+X：切换穿透/可交互 ----
-            // 穿透（不挡鼠标，可点击桌宠下方的窗口）↔ 可交互（可点击/拖动桌宠）。
-            let shortcut_ct = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyX);
-            let _ = app.global_shortcut().on_shortcut(shortcut_ct, move |app, _s, event| {
-                if event.state() != ShortcutState::Pressed {
-                    return;
-                }
-                let cur = CLICK_THROUGH.load(Ordering::Relaxed) != 0;
-                let next = !cur;
-                CLICK_THROUGH.store(next as u64, Ordering::Relaxed);
+            // ---- 全局快捷键（可配置）：面板显示/隐藏 + 穿透切换 ----
+            // 默认 Ctrl+Shift+T（面板）、Ctrl+Shift+X（穿透），可用 set_app_settings 修改。
+            {
+                let settings = load_app_settings();
+                CLICK_THROUGH.store(if settings.click_through { 1 } else { 0 }, Ordering::Relaxed);
                 if let Some(main) = app.get_webview_window("main") {
-                    let _ = main.set_ignore_cursor_events(next);
+                    let _ = main.set_ignore_cursor_events(settings.click_through);
                 }
-                log(&format!("Ctrl+Shift+X: click-through -> {}", next));
-                let _ = app.emit("click-through-changed", next);
-            });
+apply_hotkeys(app.handle(), &settings.hotkey_panel, &settings.hotkey_ct);
+            }
 
             // ---- Sidecar 回复 → emit tts 事件（前端 listen） ----
             static LISTENER_SIDECAR_REPLY: &str = "sidecar-reply";
