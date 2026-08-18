@@ -55,6 +55,10 @@ static CLICK_THROUGH: AtomicU64 = AtomicU64::new(0); // 临时：默认可交互
 /// 抓取总开关（初始与前端默认一致：开启）。看门狗重启 grabber 时按此状态 arm/disarm，
 /// 避免用户「停止/关闭抓取」后被看门狗强制重新武装。
 static GRAB_ENABLED: AtomicBool = AtomicBool::new(true);
+/// 最近一次移动悬浮框的时间：1.5s 内重复抓取（同一选区多个事件源，文本可能微差）不再移动，避免"跳"
+static LAST_GRAB: std::sync::LazyLock<Mutex<std::time::Instant>> = std::sync::LazyLock::new(|| {
+    Mutex::new(std::time::Instant::now() - std::time::Duration::from_secs(10))
+});
 /// 朗读锁定：非 0 时只抓取该前台窗口 hwnd，其他窗口的抓取被 grabber 忽略（避免切软件打断朗读）
 static GRAB_LOCK: AtomicIsize = AtomicIsize::new(0);
 /// 最近一次抓取/朗读的来源窗口 hwnd（锁定按钮据此锁定来源软件）
@@ -484,6 +488,12 @@ fn handle_grab(app: &tauri::AppHandle, text: &str, x: Option<i32>, y: Option<i32
         return;
     }
     log_async(format!("[{}] grab text ({} chars)", std::process::id(), text.chars().count()));
+    // 1.5s 内重复抓取（同一选区的多个事件源，文本可能微差）：不再移动悬浮框，保持首次位置
+    let mut last = LAST_GRAB.lock().unwrap();
+    let dup = last.elapsed().as_millis() < 1500;
+    if !dup {
+        *last = std::time::Instant::now();
+    }
     // 状态：返回观赏模式（面板隐藏、悬浮框前台）；不设置 st.1，保证 pet-dblclick 可再调出面板
     {
         let st = app.state::<AppState>();
@@ -494,9 +504,11 @@ fn handle_grab(app: &tauri::AppHandle, text: &str, x: Option<i32>, y: Option<i32
     // 移动悬浮框到鼠标/选区位置（在鼠标下方一点，避免遮挡），并收敛到屏幕内
     if let Some(f) = app.get_webview_window("floater") {
         let win_size = f.inner_size().ok().unwrap_or(tauri::PhysicalSize::new(340, 44));
-        if let (Some(px), Some(py)) = (x, y) {
-            let (cx, cy) = clamp_to_work_area(app, px + 8, py + 12, win_size.width, win_size.height);
-            let _ = f.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(cx, cy)));
+        if !dup {
+            if let (Some(px), Some(py)) = (x, y) {
+                let (cx, cy) = clamp_to_work_area(app, px + 8, py + 12, win_size.width, win_size.height);
+                let _ = f.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(cx, cy)));
+            }
         }
         let _ = f.show();
     }

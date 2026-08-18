@@ -1231,8 +1231,24 @@ def main():
         return (nl, nt, nr, nb)
 
     # ---- 执行一次抓取（UIA 选区变化事件触发）----
+    def _is_own_hwnd(hwnd):
+        # 主程序自身窗口（模型窗/面板/悬浮框）：其内容（如面板 textarea 同步的抓取文本）
+        # 经 UIA 焦点/文本事件回读会造成二次抓取并让悬浮框跳到面板上，必须整体跳过。
+        if not hwnd or not _ppid:
+            return False
+        pid = ctypes.wintypes.DWORD()
+        ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return pid.value == _ppid
+
     def _report(source, text, anchor):
         text = ' '.join(text.split())[:MAX_GRAB_CHARS]
+        # 跳过自身窗口（面板/悬浮框/主窗口）
+        try:
+            if _is_own_hwnd(_fg_hwnd()):
+                dbg("  [grab] skipped (own window)")
+                return
+        except Exception:
+            pass
         # 过滤噪音选区：Chromium 类应用（Chrome_WidgetWin_1，如 opencode/浏览器）
         # 光标移动/聚焦/渲染变化也会触发 20014 事件并读出光标附近几个字（len≈2-20），
         # 未选中也弹很烦。这类应用需选中足够长文本才弹，避免误触；记事本等保持灵敏。
@@ -1296,7 +1312,6 @@ def main():
                 # Chromium/Electron 应用不暴露选区边界）时，改为以鼠标位置为中心
                 # 截取聚焦区域，避免 OCR 读到整屏无关内容、识别不准。
                 rect = _focus_ocr_rect(rect)
-                anchor = _element_anchor(el, anchor)
                 if rect:
                     dbg("  [ocr] spawn background OCR rect=%s" % (rect,))
                     threading.Thread(
@@ -1305,7 +1320,6 @@ def main():
                     return
                 dbg("  [ocr] no element rect, skip OCR")
             dbg("uia consumed, read len=%d" % len(text))
-            anchor = _element_anchor(el, anchor)
         _report(source, text, anchor)
 
     def _ocr_job(rect, anchor, source):
