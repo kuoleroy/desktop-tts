@@ -642,6 +642,55 @@ function persistGreeting() {
   if (inp) inp.addEventListener("input", persistGreeting);
 })();
 
+// ---- 朗读缓存管理 ----
+async function refreshCacheInfo() {
+  if (!window.__TAURI__?.core) return;
+  try {
+    const info = await window.__TAURI__.core.invoke("get_cache_info");
+    const sizeEl = $("p-cache-size");
+    if (sizeEl) {
+      const mb = Number(info.size_mb || 0);
+      sizeEl.textContent = "当前占用 " + (mb >= 1024 ? (mb / 1024).toFixed(1) + " GB" : mb.toFixed(0) + " MB")
+        + " / " + (info.files || 0) + " 个文件" + (info.limit_mb ? "（上限 " + info.limit_mb + " MB）" : "（不限）");
+    }
+    const lim = $("p-cache-limit");
+    if (lim) lim.value = info.limit_mb;
+  } catch (_) {}
+}
+
+let cacheLimitTimer = null;
+function persistCacheLimit() {
+  const lim = $("p-cache-limit");
+  if (!lim || !window.__TAURI__?.core) return;
+  clearTimeout(cacheLimitTimer);
+  cacheLimitTimer = setTimeout(async () => {
+    try {
+      await window.__TAURI__.core.invoke("set_cache_limit", { mb: parseInt(lim.value, 10) || 0 });
+      showHint("缓存上限已保存");
+      refreshCacheInfo();
+    } catch (_) {}
+  }, 400);
+}
+
+(function bindCacheUI() {
+  const lim = $("p-cache-limit"), open = $("p-cache-open"), clear = $("p-cache-clear");
+  if (lim) lim.addEventListener("change", persistCacheLimit);
+  if (open) open.addEventListener("click", async () => {
+    try {
+      const info = await window.__TAURI__.core.invoke("get_cache_info");
+      if (info && info.dir) await window.__TAURI__.core.invoke("open_folder", { path: info.dir });
+    } catch (_) {}
+  });
+  if (clear) clear.addEventListener("click", async () => {
+    try {
+      const n = await window.__TAURI__.core.invoke("clear_cache");
+      showHint("已清空缓存（" + n + " 个文件）");
+      refreshCacheInfo();
+    } catch (_) {}
+  });
+  refreshCacheInfo();
+})();
+
 // 启动时读取设置：同步穿透开关与快捷键标签
 (async function initSettings() {
   if (!window.__TAURI__?.core) return;

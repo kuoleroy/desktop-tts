@@ -96,21 +96,24 @@ struct SidecarReply {
     voices: Option<Vec<String>>,
 }
 
-/// dev 模式：从项目目录找 sidecar 脚本；release 模式：exe 旁 sidecar 目录
+/// TTS sidecar 脚本路径：优先 exe 旁 sidecar 目录（release 分发），回退到项目源码目录（dev/本机）
 fn sidecar_script() -> std::path::PathBuf {
-    if cfg!(debug_assertions) {
-        let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("sidecar")
-            .join("tts_sidecar.py");
-        if dev.exists() {
-            return dev;
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let p = dir.join("sidecar").join("tts_sidecar.py");
+            if p.exists() {
+                return p;
+            }
         }
     }
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("sidecar").join("tts_sidecar.py")))
-        .unwrap_or_else(|| std::path::PathBuf::from("sidecar/tts_sidecar.py"))
+    let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("sidecar")
+        .join("tts_sidecar.py");
+    if dev.exists() {
+        return dev;
+    }
+    std::path::PathBuf::from("sidecar/tts_sidecar.py")
 }
 
 fn sidecar_dir() -> std::path::PathBuf {
@@ -197,21 +200,24 @@ fn spawn_sidecar(app: Arc<tauri::AppHandle>) -> Result<(Child, std::sync::mpsc::
     Ok((child, exit_rx, cmd_tx))
 }
 
-/// 独立抓取进程脚本路径（与 TTS sidecar 隔离，避免原生崩溃拖垮朗读）
+/// 独立抓取进程脚本路径（与 TTS sidecar 隔离，避免原生崩溃拖垮朗读）：优先 exe 旁 sidecar（release 分发），回退源码目录（dev/本机）
 fn grabber_script() -> std::path::PathBuf {
-    if cfg!(debug_assertions) {
-        let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("sidecar")
-            .join("tts_grabber.py");
-        if dev.exists() {
-            return dev;
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let p = dir.join("sidecar").join("tts_grabber.py");
+            if p.exists() {
+                return p;
+            }
         }
     }
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("sidecar").join("tts_grabber.py")))
-        .unwrap_or_else(|| std::path::PathBuf::from("sidecar/tts_grabber.py"))
+    let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("sidecar")
+        .join("tts_grabber.py");
+    if dev.exists() {
+        return dev;
+    }
+    std::path::PathBuf::from("sidecar/tts_grabber.py")
 }
 
 /// 拉起独立抓取进程，读取其 stdout 中的 grab 消息并处理；返回 (child, exit_rx, cmd_tx)
@@ -593,8 +599,17 @@ fn list_models() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// 返回模型存放目录（根目录 models/，规范化路径以消除 `..`），供前端构造 asset URL
+/// 返回模型存放目录（根目录 models/，规范化路径以消除 `..`），供前端构造 asset URL。
+/// 优先 exe 旁 models（安装版打包），回退到项目源码目录（dev/本机）
 fn models_dir() -> std::path::PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let p = dir.join("models");
+            if p.exists() {
+                return p;
+            }
+        }
+    }
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("models")
@@ -606,8 +621,17 @@ fn models_dir() -> std::path::PathBuf {
         })
 }
 
-/// 返回 TTS 音频缓存目录（规范化路径以消除 `..`，供 asset 协议访问）
+/// 返回 TTS 音频缓存目录（规范化路径以消除 `..`，供 asset 协议访问）。
+/// 优先 exe 旁 tts_cache（安装版），回退到项目源码目录（dev/本机）
 fn cache_dir() -> std::path::PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let p = dir.join("tts_cache");
+            if p.exists() || !cfg!(debug_assertions) {
+                return p;
+            }
+        }
+    }
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("tts_cache")
@@ -630,8 +654,16 @@ fn dance_dir() -> String {
     dance_root_dir().to_string_lossy().to_string()
 }
 
-/// 舞蹈文件根目录（dance/，规范化路径以消除 `..`）
+/// 舞蹈文件根目录（dance/，规范化路径以消除 `..`）：优先 exe 旁 dance（安装版），回退源码目录（dev/本机）
 fn dance_root_dir() -> std::path::PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let p = dir.join("dance");
+            if p.exists() {
+                return p;
+            }
+        }
+    }
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("dance")
@@ -665,6 +697,94 @@ fn open_folder(path: String) {
     let _ = std::process::Command::new("explorer")
         .arg(&path)
         .spawn();
+}
+
+/// 清理朗读缓存：超过上限时删除最旧文件，直到低于上限；limit_mb=0 表示不限
+pub fn enforce_cache_limit() -> u64 {
+    let limit = load_app_settings().cache_limit_mb;
+    if limit == 0 {
+        return 0;
+    }
+    let dir = cache_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else { return 0 };
+    let mut files: Vec<(std::time::SystemTime, std::path::PathBuf, u64)> = Vec::new();
+    for e in entries.flatten() {
+        if let Ok(md) = e.metadata() {
+            if md.is_file() {
+                files.push((md.modified().unwrap_or(std::time::UNIX_EPOCH), e.path(), md.len()));
+            }
+        }
+    }
+    let mut total: u64 = files.iter().map(|(_, _, s)| s).sum();
+    let limit_bytes = limit * 1024 * 1024;
+    let mut removed = 0u64;
+    files.sort_by_key(|(t, _, _)| *t);
+    for (_, path, size) in files {
+        if total <= limit_bytes {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            total = total.saturating_sub(size);
+            removed += 1;
+        }
+    }
+    if removed > 0 {
+        log_async(format!("[cache] cleaned {removed} files (limit {limit}MB)"));
+    }
+    removed
+}
+
+/// 当前缓存信息：大小(MB)/文件数/上限(MB)
+#[tauri::command]
+fn get_cache_info() -> serde_json::Value {
+    let limit = load_app_settings().cache_limit_mb;
+    enforce_cache_limit();
+    let dir = cache_dir();
+    let mut size = 0u64;
+    let mut files = 0u64;
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            if let Ok(md) = e.metadata() {
+                if md.is_file() {
+                    size += md.len();
+                    files += 1;
+                }
+            }
+        }
+    }
+    serde_json::json!({
+        "size_mb": size as f64 / (1024.0 * 1024.0),
+        "files": files,
+        "limit_mb": limit,
+        "dir": dir.to_string_lossy(),
+    })
+}
+
+/// 设置缓存上限(MB)，0=不限
+#[tauri::command]
+fn set_cache_limit(mb: u64) {
+    let mut s = load_app_settings();
+    s.cache_limit_mb = mb;
+    save_app_settings(&s);
+    enforce_cache_limit();
+}
+
+/// 清空朗读缓存
+#[tauri::command]
+fn clear_cache() -> u64 {
+    let dir = cache_dir();
+    let mut removed = 0u64;
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            if let Ok(md) = e.metadata() {
+                if md.is_file() && std::fs::remove_file(e.path()).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+    }
+    log_async(format!("[cache] manual clear removed {removed} files"));
+    removed
 }
 
 /// 读取当前 TTS 配置（音色/语速/语调），sidecar 可能未启动，失败返回默认
@@ -833,6 +953,9 @@ struct AppSettings {
     /// 精灵首次加载时弹出的问候语
     #[serde(default = "default_greeting")]
     greeting: String,
+    /// 朗读音频缓存上限（MB），超出时自动删除最旧文件
+    #[serde(default = "default_cache_limit_mb")]
+    cache_limit_mb: u64,
 }
 
 fn default_floater_color() -> String { "#1e2026".into() }
@@ -842,6 +965,7 @@ fn default_ignore_symbols() -> Vec<String> {
     vec!["[]".into(), "{}".into(), "【】".into(), "（）".into(), "()".into(), "《》".into(), "<>".into()]
 }
 fn default_greeting() -> String { "你好，我是桌面小精灵，欢迎回来！".into() }
+fn default_cache_limit_mb() -> u64 { 500 }
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -854,12 +978,21 @@ impl Default for AppSettings {
             ignore_pairs: default_ignore_pairs(),
             ignore_symbols: default_ignore_symbols(),
             greeting: default_greeting(),
+            cache_limit_mb: default_cache_limit_mb(),
         }
     }
 }
 
 fn app_settings_path() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let p = dir.join("sidecar").join("settings_app.json");
+            if p.exists() || !cfg!(debug_assertions) {
+                return p;
+            }
+        }
+    }
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("sidecar")
         .join("settings_app.json")
@@ -1364,7 +1497,8 @@ fn main() {
             get_app_settings, set_app_settings, get_click_through, toggle_click_through,
             set_main_scale, toggle_panel_ui, get_panel_visible,
             list_dances, open_folder, dance_dir,
-            get_providers, save_providers, fetch_provider_voices
+            get_providers, save_providers, fetch_provider_voices,
+            get_cache_info, set_cache_limit, clear_cache
         ])
         .on_window_event(|window, event| {
             match event {
@@ -1393,6 +1527,9 @@ fn main() {
             let _ = scope.allow_directory(models_dir(), true);
             let _ = scope.allow_directory(cache_dir(), true);
             let _ = scope.allow_directory(dance_root_dir(), true);
+
+            // ---- 启动时按上限清理朗读缓存 ----
+            enforce_cache_limit();
 
             // ---- 主窗口：按 CLICK_THROUGH 设置初始穿透状态（默认穿透，悬停自动切回交互）----
             let main_win = app.get_webview_window("main").expect("main window");
