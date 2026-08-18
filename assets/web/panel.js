@@ -272,6 +272,8 @@ whenTauriReady(() => {
   // 启动时读取持久化配置并同步下拉框（音色/语速/语调）
   TTS.getSettings().then((s) => {
     if (!s) return;
+    setGreetingUI(s);
+    setMultiUI(s);
     return TTS.providers().then((list) => {
       window.__providerList = (list && list.providers) || [];
       if (s.voice) buildVoiceOptions(s.voice);
@@ -622,6 +624,24 @@ function setGreetingUI(s) {
   inp.value = (s.greeting && s.greeting.trim()) ? s.greeting : "";
   inp.placeholder = "精灵首次弹出的问候语";
 }
+
+function setMultiUI(s) {
+  const m = $("p-multi");
+  if (m) m.checked = !!s.multi_instance;
+}
+
+(function bindMultiUI() {
+  const m = $("p-multi");
+  if (!m) return;
+  m.addEventListener("change", async () => {
+    try {
+      const s = await window.__TAURI__.core.invoke("get_app_settings");
+      s.multi_instance = m.checked;
+      await window.__TAURI__.core.invoke("set_app_settings", { settings: s });
+      showHint("多开设置已保存");
+    } catch (_) {}
+  });
+})();
 
 let greetingTimer = null;
 function persistGreeting() {

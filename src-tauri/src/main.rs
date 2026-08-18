@@ -633,26 +633,17 @@ fn models_dir() -> std::path::PathBuf {
         })
 }
 
-/// 返回 TTS 音频缓存目录（规范化路径以消除 `..`，供 asset 协议访问）。
-/// 优先 exe 旁 tts_cache（安装版），回退到项目源码目录（dev/本机）
+/// 返回 TTS 音频缓存目录：必须与 sidecar 的 CACHE 一致（sidecar 脚本目录的父目录/tts_cache），
+/// 否则 asset 协议放行目录与实际 mp3 所在目录不一致，播放会被拒（无声）。
+/// 安装版：exe 旁 tts_cache；本机回退源码：项目根 tts_cache。
 fn cache_dir() -> std::path::PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let p = dir.join("tts_cache");
-            if p.exists() || !cfg!(debug_assertions) {
-                return p;
-            }
-        }
-    }
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("tts_cache")
-        .canonicalize()
-        .unwrap_or_else(|_| {
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("..")
-                .join("tts_cache")
-        })
+    let p = sidecar_dir()
+        .parent()
+        .map(|p| p.join("tts_cache"))
+        .unwrap_or_else(|| std::path::PathBuf::from("tts_cache"));
+    // 规范化以消除路径中的 `..`（回退分支含 src-tauri/../），确保 asset scope
+    // 放行目录与实际 mp3 写入目录严格一致；目录不存在（首次启动）则用原始路径
+    std::fs::canonicalize(&p).unwrap_or(p)
 }
 
 #[tauri::command]
@@ -968,6 +959,9 @@ struct AppSettings {
     /// 朗读音频缓存上限（MB），超出时自动删除最旧文件
     #[serde(default = "default_cache_limit_mb")]
     cache_limit_mb: u64,
+    /// 是否允许多开实例（默认允许；关闭后重复启动将提示并退出）
+    #[serde(default = "default_multi_instance")]
+    multi_instance: bool,
 }
 
 fn default_floater_color() -> String { "#1e2026".into() }
@@ -978,6 +972,7 @@ fn default_ignore_symbols() -> Vec<String> {
 }
 fn default_greeting() -> String { "你好，我是桌面小精灵，欢迎回来！".into() }
 fn default_cache_limit_mb() -> u64 { 500 }
+fn default_multi_instance() -> bool { true }
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -991,23 +986,14 @@ impl Default for AppSettings {
             ignore_symbols: default_ignore_symbols(),
             greeting: default_greeting(),
             cache_limit_mb: default_cache_limit_mb(),
+            multi_instance: default_multi_instance(),
         }
     }
 }
 
 fn app_settings_path() -> std::path::PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let p = dir.join("sidecar").join("settings_app.json");
-            if p.exists() || !cfg!(debug_assertions) {
-                return p;
-            }
-        }
-    }
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("sidecar")
-        .join("settings_app.json")
+    // 与 sidecar 的 APP_SETTINGS_FILE 一致（sidecar 脚本所在目录/settings_app.json）
+    sidecar_dir().join("settings_app.json")
 }
 
 fn load_app_settings() -> AppSettings {
@@ -1531,6 +1517,48 @@ fn main() {
                 log_async(format!("[{}] {}", std::process::id(), msg));
             };
             log("setup started");
+
+            // ---- 单实例限制：设置关闭「多开」时，检测到已有实例则提示并退出 ----
+            {
+                let settings = load_app_settings();
+                if !settings.multi_instance {
+                    let name: Vec<u16> = "Global\\desktop-tts-single"
+                        .encode_utf16()
+                        .chain(std::iter::once(0))
+                        .collect();
+                    unsafe {
+                        windows_sys::Win32::Foundation::SetLastError(0);
+                        let h = windows_sys::Win32::System::Threading::CreateMutexW(
+                            std::ptr::null_mut(),
+                            1,
+                            name.as_ptr(),
+                        );
+                        let exists = h != 0
+                            && windows_sys::Win32::Foundation::GetLastError()
+                                == windows_sys::Win32::Foundation::ERROR_ALREADY_EXISTS;
+                        if exists {
+                            let text: Vec<u16> = "已有一个桌面小精灵在运行。\n如需同时运行多个，请在控制面板打开「多开窗口」。"
+                                .encode_utf16()
+                                .chain(std::iter::once(0))
+                                .collect();
+                            let title: Vec<u16> = "desktop-tts"
+                                .encode_utf16()
+                                .chain(std::iter::once(0))
+                                .collect();
+                            windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
+                                0,
+                                text.as_ptr(),
+                                title.as_ptr(),
+                                windows_sys::Win32::UI::WindowsAndMessaging::MB_OK
+                                    | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONINFORMATION,
+                            );
+                            std::process::exit(0);
+                        }
+                        // 持有锁句柄直至进程退出（系统自动释放）
+                        let _ = h;
+                    }
+                }
+            }
 
             let app_handle = Arc::new(app.handle().clone());
 
