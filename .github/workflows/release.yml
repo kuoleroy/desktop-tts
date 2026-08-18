@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+
+      - name: Build & Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "desktop-tts ${{ github.ref_name }}"
+          releaseBody: |
+            ## 桌面小精灵 · 全局朗读助手
+
+            可拖动的 3D 桌宠 + 全局选中文字自动朗读的 Windows 桌面应用。
+
+            ### 安装
+            - 下载下方 `desktop-tts_*_x64-setup.exe` 安装包
+            - 需要 Python 3.10+（TTS / 抓取侧车进程为标准库脚本，无需安装任何 pip 包）
+
+            ### 功能
+            - 任意软件选中文字自动弹出悬浮框朗读（UIA → 剪贴板 → OCR 三级兜底）
+            - 6 种在线神经音色（edge-tts，免费）+ 本机语音断网兜底
+            - 语速/语调调节、长文本分块朗读、导出 MP3
+            - 悬浮框可自定义颜色/透明度/大小；右键子菜单可切换模型与舞蹈
+            - 面板：问候语自定义、朗读缓存管理（上限自动清理/打开文件夹/清空）
+            - 多开开关（默认允许多个桌宠实例，可关闭为单实例）
+            - 全局快捷键：Ctrl+Shift+T 面板、Ctrl+Shift+X 鼠标穿透
+            - 启动默认隐藏面板，只留桌宠观赏
+
+            ### 说明
+            - 语音合成为在线服务（edge-tts），需联网；断网自动兜底本机语音
+            - MIT License，见仓库 LICENSE
+          releaseDraft: true
+          prerelease: false
