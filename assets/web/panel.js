@@ -358,6 +358,12 @@ $("p-quit").addEventListener("click", () => {
   TTS.quit().catch((e) => showHint("退出失败：" + e.message, true));
 });
 
+// 最小化到系统托盘
+const trayBtn = $("p-tray");
+if (trayBtn) trayBtn.addEventListener("click", () => {
+  window.__TAURI__.core.invoke("minimize_to_tray").catch(() => {});
+});
+
 // ---- 跳过注入应用管理 ----
 async function refreshSkipList() {
   if (!window.__TAURI__?.core) { setTimeout(refreshSkipList, 1000); return; }

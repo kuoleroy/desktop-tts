@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use tauri::{Emitter, Listener, Manager};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers};
 
 static REGISTERED_EVENTS: std::sync::LazyLock<Mutex<HashSet<&'static str>>> =
@@ -100,14 +102,36 @@ struct SidecarReply {
     voices: Option<Vec<String>>,
 }
 
-/// TTS sidecar 脚本路径：优先 exe 旁 sidecar 目录（release 分发），回退到项目源码目录（dev/本机）
+/// 返回 exe 旁的资源根目录：NSIS 安装版资源在 `_up_` 子目录（Tauri 2 默认），
+/// 也兼容直接放在 exe 旁（手动分发）。dev/本机回退源码目录，不依赖编译机路径。
+fn exe_resource_root() -> Option<std::path::PathBuf> {
+    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    for c in [dir.join("_up_"), dir.clone()] {
+        if c.is_dir() {
+            return Some(c);
+        }
+    }
+    None
+}
+
+/// 查找资源子目录（models/dance/sidecar）：优先 exe 旁资源根（安装版），回退源码目录（dev/本机）。
+/// 注意：绝不能回退到编译机路径（CARGO_MANIFEST_DIR），否则 CI 构建的安装包在其他机器上失效。
+fn bundled_dir(name: &str) -> Option<std::path::PathBuf> {
+    if let Some(root) = exe_resource_root() {
+        let p = root.join(name);
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// TTS sidecar 脚本路径：优先 exe 旁资源根（安装版），回退到项目源码目录（dev/本机）
 fn sidecar_script() -> std::path::PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let p = dir.join("sidecar").join("tts_sidecar.py");
-            if p.exists() {
-                return p;
-            }
+    if let Some(dir) = bundled_dir("sidecar") {
+        let p = dir.join("tts_sidecar.py");
+        if p.exists() {
+            return p;
         }
     }
     let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -204,14 +228,12 @@ fn spawn_sidecar(app: Arc<tauri::AppHandle>) -> Result<(Child, std::sync::mpsc::
     Ok((child, exit_rx, cmd_tx))
 }
 
-/// 独立抓取进程脚本路径（与 TTS sidecar 隔离，避免原生崩溃拖垮朗读）：优先 exe 旁 sidecar（release 分发），回退源码目录（dev/本机）
+/// 独立抓取进程脚本路径（与 TTS sidecar 隔离，避免原生崩溃拖垮朗读）：优先 exe 旁资源根（安装版），回退源码目录（dev/本机）
 fn grabber_script() -> std::path::PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let p = dir.join("sidecar").join("tts_grabber.py");
-            if p.exists() {
-                return p;
-            }
+    if let Some(dir) = bundled_dir("sidecar") {
+        let p = dir.join("tts_grabber.py");
+        if p.exists() {
+            return p;
         }
     }
     let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -613,14 +635,10 @@ fn list_models() -> Vec<String> {
 
 /// 返回模型存放目录（根目录 models/，规范化路径以消除 `..`），供前端构造 asset URL。
 /// 优先 exe 旁 models（安装版打包），回退到项目源码目录（dev/本机）
+/// 模型目录：优先 exe 旁资源根（安装版 _up_/models），回退源码目录（dev/本机）
 fn models_dir() -> std::path::PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let p = dir.join("models");
-            if p.exists() {
-                return p;
-            }
-        }
+    if let Some(p) = bundled_dir("models") {
+        return p;
     }
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -657,15 +675,10 @@ fn dance_dir() -> String {
     dance_root_dir().to_string_lossy().to_string()
 }
 
-/// 舞蹈文件根目录（dance/，规范化路径以消除 `..`）：优先 exe 旁 dance（安装版），回退源码目录（dev/本机）
+/// 舞蹈文件根目录（dance/，规范化路径以消除 `..`）：优先 exe 旁资源根（安装版 _up_/dance），回退源码目录（dev/本机）
 fn dance_root_dir() -> std::path::PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let p = dir.join("dance");
-            if p.exists() {
-                return p;
-            }
-        }
+    if let Some(p) = bundled_dir("dance") {
+        return p;
     }
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -1155,6 +1168,16 @@ fn set_app_settings(app: tauri::AppHandle, settings: AppSettings) -> Result<(), 
 }
 
 #[tauri::command]
+/// 最小化到系统托盘：隐藏主窗口/面板/悬浮框（托盘右键可恢复或退出）
+fn minimize_to_tray(app: tauri::AppHandle) {
+    for label in ["main", "panel", "floater"] {
+        if let Some(w) = app.get_webview_window(label) {
+            let _ = w.hide();
+        }
+    }
+}
+
+#[tauri::command]
 fn quit(app: tauri::AppHandle) {
     // 关闭 sidecar 与 grabber 子进程，避免残留孤儿 python
     {
@@ -1427,10 +1450,24 @@ fn get_window_at() -> serde_json::Value {
     })
 }
 
+/// diag.log 路径：dev 写项目根（方便调试），release 写 %LOCALAPPDATA%（安装目录 Program Files 通常不可写）
+fn diag_log_path() -> std::path::PathBuf {
+    if cfg!(debug_assertions) {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("diag.log")
+    } else {
+        std::env::var("LOCALAPPDATA")
+            .map(|d| std::path::PathBuf::from(d).join("com.kuoleroy.desktop-tts").join("diag.log"))
+            .unwrap_or_else(|_| std::path::PathBuf::from("diag.log"))
+    }
+}
+
 fn main() {
     // ---- 崩溃捕获：panic 时同步写入 diag.log（防 abort 前丢日志）----
     {
-        let log_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("diag.log");
+        let log_path = diag_log_path();
+        if let Some(parent) = log_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         std::panic::set_hook(Box::new(move |info| {
             use std::io::Write;
             let msg = format!("[{}] PANIC: {}", std::process::id(), info);
@@ -1445,7 +1482,10 @@ fn main() {
     // ---- 初始化异步日志（单例，启动一次）----
     let (log_tx, log_rx) = mpsc::channel();
     let _ = LOG_TX.set(log_tx);
-    let log_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("diag.log");
+    let log_path = diag_log_path();
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
     thread::spawn(move || {
         use std::sync::mpsc::RecvTimeoutError;
         let mut buffer: Vec<String> = Vec::new();
@@ -1496,7 +1536,8 @@ fn main() {
             set_main_scale, toggle_panel_ui, get_panel_visible,
             list_dances, open_folder, dance_dir,
             get_providers, save_providers, fetch_provider_voices,
-            get_cache_info, set_cache_limit, clear_cache
+            get_cache_info, set_cache_limit, clear_cache,
+            minimize_to_tray
         ])
         .on_window_event(|window, event| {
             match event {
@@ -1517,6 +1558,47 @@ fn main() {
                 log_async(format!("[{}] {}", std::process::id(), msg));
             };
             log("setup started");
+
+            // ---- 系统托盘：左键单击切换桌宠显示，右键菜单显示/退出 ----
+            {
+                let show_item = MenuItem::with_id(app, "show", "显示桌宠", true, None::<&str>)?;
+                let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+                let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+                let _tray = TrayIconBuilder::with_id("main-tray")
+                    .icon(app.default_window_icon().expect("app icon").clone())
+                    .menu(&menu)
+                    .show_menu_on_left_click(false)
+                    .on_menu_event(|app, event| match event.id.as_ref() {
+                        "show" => {
+                            if let Some(main) = app.get_webview_window("main") {
+                                let _ = main.show();
+                                let _ = main.set_focus();
+                            }
+                        }
+                        "quit" => quit(app.clone()),
+                        _ => {}
+                    })
+                    .on_tray_icon_event(|tray, event| {
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            let app = tray.app_handle();
+                            if let Some(main) = app.get_webview_window("main") {
+                                if main.is_visible().unwrap_or(false) {
+                                    let _ = main.hide();
+                                } else {
+                                    let _ = main.show();
+                                    let _ = main.set_focus();
+                                }
+                            }
+                        }
+                    })
+                    .build(app)?;
+                log("tray icon created");
+            }
 
             // ---- 单实例限制：设置关闭「多开」时，检测到已有实例则提示并退出 ----
             {
