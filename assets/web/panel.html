@@ -237,6 +237,16 @@ input[type=color] {
         <input id="p-ignore-syms" class="sel" style="flex:1;min-width:0;font-size:12px;padding:4px 6px;border:1px solid #ddd;border-radius:6px;"
                placeholder="符号对，如 [],{},【】,（）,(),《》,<>">
       </div>
+      <div class="seg-row" style="margin-top:4px;">
+        <label class="toggle-line" style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;">
+          <input type="checkbox" id="p-strip-syms" checked>
+          <span>朗读时跳过 Markdown 符号（* ` # 等）</span>
+        </label>
+      </div>
+      <div class="seg-row" style="margin-top:4px;">
+        <input id="p-strip-chars" class="sel" style="flex:1;min-width:0;font-size:12px;padding:4px 6px;border:1px solid #ddd;border-radius:6px;"
+               placeholder="要跳过的符号集合，如 *~`#&gt;|_-">
+      </div>
     </div>
 
     <!-- 精灵问候语 -->

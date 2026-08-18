@@ -966,6 +966,12 @@ struct AppSettings {
     /// 用户自定义的忽略符号对列表，每项形如 "[]"、"【】"
     #[serde(default = "default_ignore_symbols")]
     ignore_symbols: Vec<String>,
+    /// 朗读时跳过 Markdown 符号（*、`、# 等），只删符号本身不删文字
+    #[serde(default = "default_strip_symbols")]
+    strip_symbols: bool,
+    /// 自定义要跳过的符号集合（默认 `*~`#&gt;|_-`）
+    #[serde(default = "default_strip_symbol_chars")]
+    strip_symbol_chars: String,
     /// 精灵首次加载时弹出的问候语
     #[serde(default = "default_greeting")]
     greeting: String,
@@ -983,6 +989,8 @@ fn default_ignore_pairs() -> bool { true }
 fn default_ignore_symbols() -> Vec<String> {
     vec!["[]".into(), "{}".into(), "【】".into(), "（）".into(), "()".into(), "《》".into(), "<>".into()]
 }
+fn default_strip_symbols() -> bool { true }
+fn default_strip_symbol_chars() -> String { "*~`#>|_-".into() }
 fn default_greeting() -> String { "你好，我是桌面小精灵，欢迎回来！".into() }
 fn default_cache_limit_mb() -> u64 { 500 }
 fn default_multi_instance() -> bool { true }
@@ -997,6 +1005,8 @@ impl Default for AppSettings {
             floater_opacity: default_floater_opacity(),
             ignore_pairs: default_ignore_pairs(),
             ignore_symbols: default_ignore_symbols(),
+            strip_symbols: default_strip_symbols(),
+            strip_symbol_chars: default_strip_symbol_chars(),
             greeting: default_greeting(),
             cache_limit_mb: default_cache_limit_mb(),
             multi_instance: default_multi_instance(),

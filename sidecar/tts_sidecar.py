@@ -389,12 +389,38 @@ def strip_ignored(text):
             end = pairs[ch]
             j = text.find(end, i + 1)
             if j != -1:
-                # 跳过整段（含符号），继续从右符号之后处理
                 i = j + 1
                 continue
         out.append(ch)
         i += 1
     return "".join(out)
+
+
+# 朗读时跳过的孤立符号（Markdown 标记等）。只删符号本身，保留其中文字。
+DEFAULT_STRIP_SYMBOLS = set("*~`#>|_-")
+STRIP_SYMBOLS_FILE = os.path.join(os.path.dirname(BASE), "sidecar", "settings_app.json")
+
+
+def _strip_symbols_config():
+    """读取 settings_app.json 的 strip_symbols 开关与自定义符号集合。"""
+    try:
+        with open(STRIP_SYMBOLS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        enabled = bool(data.get("strip_symbols", True))
+        custom = data.get("strip_symbol_chars")
+        if isinstance(custom, str) and custom:
+            return enabled, set(custom)
+        return enabled, set(DEFAULT_STRIP_SYMBOLS)
+    except Exception:
+        return True, set(DEFAULT_STRIP_SYMBOLS)
+
+
+def strip_symbols(text):
+    """删除 Markdown 标记符号（不删文字），用于让 TTS 不念出星号/井号等噪音。"""
+    enabled, syms = _strip_symbols_config()
+    if not enabled or not text or not syms:
+        return text
+    return "".join(ch for ch in text if ch not in syms)
 
 
 def split_blocks(text, max_len=MAX_BLOCK):
@@ -443,6 +469,7 @@ def _run_heavy(cmd, text, rid):
     """后台线程执行耗时合成（tts/export），完成后回写结果。"""
     try:
         text = strip_ignored(text)
+        text = strip_symbols(text)
         if cmd == "tts":
             files = _tts(text)
             out({"id": rid, "ok": True, "files": files})

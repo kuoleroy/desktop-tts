@@ -736,6 +736,7 @@ function persistCacheLimit() {
 
 // ---- 忽略括号内容：开关 + 自定义符号对 ----
 const DEFAULT_IGNORE_SYMS = ["[]", "{}", "【】", "（）", "()", "《》", "<>"];
+const DEFAULT_STRIP_CHARS = "*~`#>|_-";
 
 function setIgnoreUI(s) {
   const cb = $("p-ignore"), inp = $("p-ignore-syms");
@@ -743,11 +744,18 @@ function setIgnoreUI(s) {
   cb.checked = s.ignore_pairs !== false;
   const syms = Array.isArray(s.ignore_symbols) && s.ignore_symbols.length ? s.ignore_symbols : DEFAULT_IGNORE_SYMS;
   inp.value = syms.join(",");
+  const stripCb = $("p-strip-syms"), stripInp = $("p-strip-chars");
+  if (stripCb) stripCb.checked = s.strip_symbols !== false;
+  if (stripInp) {
+    const custom = typeof s.strip_symbol_chars === "string" && s.strip_symbol_chars ? s.strip_symbol_chars : DEFAULT_STRIP_CHARS;
+    stripInp.value = custom;
+  }
 }
 
 let ignoreTimer = null;
 function persistIgnore() {
   const cb = $("p-ignore"), inp = $("p-ignore-syms");
+  const stripCb = $("p-strip-syms"), stripInp = $("p-strip-chars");
   if (!cb || !inp || !window.__TAURI__?.core) return;
   clearTimeout(ignoreTimer);
   ignoreTimer = setTimeout(async () => {
@@ -761,6 +769,10 @@ function persistIgnore() {
         if (x.length >= 2) syms.push(x[0] + x[x.length - 1]);
       });
       s.ignore_symbols = syms.length ? syms : DEFAULT_IGNORE_SYMS;
+      if (stripCb) s.strip_symbols = stripCb.checked;
+      if (stripInp) {
+        s.strip_symbol_chars = (stripInp.value || "").trim() || DEFAULT_STRIP_CHARS;
+      }
       await window.__TAURI__.core.invoke("set_app_settings", { settings: s });
     } catch (_) {}
   }, 300);
@@ -769,6 +781,9 @@ function persistIgnore() {
   const cb = $("p-ignore"), inp = $("p-ignore-syms");
   if (cb) cb.addEventListener("change", persistIgnore);
   if (inp) inp.addEventListener("input", persistIgnore);
+  const stripCb = $("p-strip-syms"), stripInp = $("p-strip-chars");
+  if (stripCb) stripCb.addEventListener("change", persistIgnore);
+  if (stripInp) stripInp.addEventListener("input", persistIgnore);
 })();
 
 // ---- 右键菜单：隐藏面板 ----
