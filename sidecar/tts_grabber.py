@@ -129,6 +129,9 @@ def dbg(msg):
 _load_skip_config()
 _load_grab_skip_config()
 
+# 朗读锁定：非 None 时只抓取该前台窗口（hwnd），其他窗口的抓取一律跳过，避免切软件打断朗读
+GRAB_LOCK_HWND = None
+
 
 def out(obj):
     with _OUT_LOCK:
@@ -293,6 +296,17 @@ def _fg_class():
         return cls.value
     except Exception:
         return ''
+
+def _fg_hwnd():
+    """当前前台窗口句柄（int，失败返回 0）。"""
+    try:
+        user32 = ctypes.windll.user32
+        user32.GetForegroundWindow.restype = ctypes.wintypes.HWND
+        user32.GetForegroundWindow.argtypes = []
+        h = user32.GetForegroundWindow()
+        return int(h) if h else 0
+    except Exception:
+        return 0
 
 def _fg_process_exe(hwnd):
     """根据窗口句柄获取进程 exe 文件名（小写，不含路径）。失败返回空字符串。"""
@@ -1232,7 +1246,7 @@ def main():
         last_text[0] = text
         dbg("grab hit (%s) len=%d" % (source, len(text)))
         out({"id": 0, "ok": True, "grab": True, "text": text,
-             "x": anchor[0], "y": anchor[1]})
+             "x": anchor[0], "y": anchor[1], "hwnd": _fg_hwnd()})
 
     def _do_grab(source):
         # 跳过抓取的应用：前台窗口命中 grab_skip_apps.json 则不抓
@@ -1240,6 +1254,11 @@ def main():
             fg = ctypes.windll.user32.GetForegroundWindow()
             if _is_grab_skip_hwnd(fg):
                 dbg("  [grab] skipped (fg is grab-skip window)")
+                pending["element"] = None
+                pending["dirty"] = False
+                return
+            if GRAB_LOCK_HWND is not None and fg != GRAB_LOCK_HWND:
+                dbg("  [grab] skipped (locked to other window)")
                 pending["element"] = None
                 pending["dirty"] = False
                 return
@@ -1319,6 +1338,10 @@ def main():
             if _is_grab_skip_hwnd(fg):
                 dbg("  [selread] skipped (fg is grab-skip window)")
                 out({"id": 0, "ok": False, "grab": False, "error": "grab skip window"})
+                return
+            if GRAB_LOCK_HWND is not None and fg != GRAB_LOCK_HWND:
+                dbg("  [selread] skipped (locked to other window)")
+                out({"id": 0, "ok": False, "grab": False, "error": "grab locked"})
                 return
         except Exception:
             pass
@@ -1419,6 +1442,15 @@ def main():
                 dbg("received reload_skip cmd")
                 _load_skip_config()
                 _load_grab_skip_config()
+            elif cmd == "grab_lock":
+                # 朗读锁定：payload 为 hwnd（锁）或空（解锁）
+                global GRAB_LOCK_HWND
+                try:
+                    h = (msg.get("text") or "").strip()
+                    GRAB_LOCK_HWND = int(h) if h and h.lower() != "none" else None
+                except Exception:
+                    GRAB_LOCK_HWND = None
+                dbg("grab lock set to %r" % GRAB_LOCK_HWND)
 
     threading.Thread(target=_stdin_reader, daemon=True).start()
 

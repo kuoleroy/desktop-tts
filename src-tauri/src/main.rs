@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
 use std::os::windows::process::CommandExt;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use tauri::{Emitter, Listener, Manager};
@@ -55,6 +55,10 @@ static CLICK_THROUGH: AtomicU64 = AtomicU64::new(0); // 临时：默认可交互
 /// 抓取总开关（初始与前端默认一致：开启）。看门狗重启 grabber 时按此状态 arm/disarm，
 /// 避免用户「停止/关闭抓取」后被看门狗强制重新武装。
 static GRAB_ENABLED: AtomicBool = AtomicBool::new(true);
+/// 朗读锁定：非 0 时只抓取该前台窗口 hwnd，其他窗口的抓取被 grabber 忽略（避免切软件打断朗读）
+static GRAB_LOCK: AtomicIsize = AtomicIsize::new(0);
+/// 最近一次抓取/朗读的来源窗口 hwnd（锁定按钮据此锁定来源软件）
+static GRAB_LAST_HWND: AtomicIsize = AtomicIsize::new(0);
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct SidecarReply {
@@ -78,6 +82,9 @@ struct SidecarReply {
     x: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     y: Option<i32>,
+    /// 抓取来源窗口句柄（朗读锁定用）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hwnd: Option<i64>,
     /// 拖放识别上报：命中跳过管理区时，grabber 上报需加入跳过注入列表的 exe 名
     #[serde(skip_serializing_if = "Option::is_none")]
     skip_exe: Option<String>,
@@ -273,6 +280,10 @@ fn spawn_grabber(app: Arc<tauri::AppHandle>) -> Result<(Child, std::sync::mpsc::
                 continue;
             };
             if reply.grab {
+                // 记录抓取来源窗口（朗读锁定用），再交给 handle_grab
+                if let Some(hw) = reply.hwnd {
+                    GRAB_LAST_HWND.store(hw as isize, Ordering::Relaxed);
+                }
                 handle_grab(
                     &app2,
                     reply.text.as_deref().unwrap_or(""),
@@ -371,6 +382,36 @@ fn show_crop(app: tauri::AppHandle) {
 fn toggle_grab(app: tauri::AppHandle, on: bool) {
     GRAB_ENABLED.store(on, Ordering::Relaxed);
     grabber_cmd(&app, if on { "arm" } else { "disarm" });
+}
+
+/// 朗读锁定开关：锁定时记录最近抓取来源窗口 hwnd 并下发 grabber，只抓取该窗口，其他窗口忽略。
+/// 返回锁定后的状态（true=已锁定）。
+#[tauri::command]
+fn toggle_grab_lock(app: tauri::AppHandle) -> bool {
+    let cur = GRAB_LOCK.load(Ordering::Relaxed);
+    if cur != 0 {
+        GRAB_LOCK.store(0, Ordering::Relaxed);
+        grabber_cmd_payload(&app, "grab_lock", "");
+        log_async(format!("[{}] grab lock -> off", std::process::id()));
+        false
+    } else {
+        // 锁定最近一次抓取/朗读的来源窗口（而非当前前台，因为点按钮时前台是悬浮框）
+        let h = GRAB_LAST_HWND.load(Ordering::Relaxed);
+        if h == 0 {
+            log_async(format!("[{}] grab lock: no source window recorded yet", std::process::id()));
+            return false;
+        }
+        GRAB_LOCK.store(h, Ordering::Relaxed);
+        grabber_cmd_payload(&app, "grab_lock", &h.to_string());
+        log_async(format!("[{}] grab lock -> on (hwnd {})", std::process::id(), h));
+        true
+    }
+}
+
+/// 查询朗读是否处于锁定状态
+#[tauri::command]
+fn get_grab_lock() -> bool {
+    GRAB_LOCK.load(Ordering::Relaxed) != 0
 }
 
 /// 悬浮框「设置」→ 呼出面板作为后台设置界面（切交互态，与双击模型一致）
@@ -1313,7 +1354,7 @@ fn main() {
         .manage(GrabberState(Mutex::new(None)))
         .manage(AppState(Mutex::new((AppMode::Watch, false))))
         .invoke_handler(tauri::generate_handler![
-            read_text, stop_read, set_voice, set_rate, set_pitch, export_mp3, list_models, model_dir, quit, toggle_grab, show_panel, get_settings, toggle_click_through, get_click_through, ocr_rect, show_crop, selread, clipwatch,
+            read_text, stop_read, set_voice, set_rate, set_pitch, export_mp3, list_models, model_dir, quit, toggle_grab, toggle_grab_lock, get_grab_lock, show_panel, get_settings, toggle_click_through, get_click_through, ocr_rect, show_crop, selread, clipwatch,
             get_skip_apps, add_skip_app, remove_skip_app, clear_skip_apps, get_fg_window_info, get_window_at,
             get_grab_skip_apps, add_grab_skip_app, remove_grab_skip_app, clear_grab_skip_apps,
             get_app_settings, set_app_settings, get_click_through, toggle_click_through,

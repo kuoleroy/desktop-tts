@@ -46,6 +46,8 @@
     white-space: nowrap;
   }
   #btn-pause.active svg { stroke: #f0b429; }
+  #btn-lock.active svg { stroke: #4fc3f7; }
+  #btn-lock.active { background: rgba(79, 195, 247, 0.16); }
 </style>
 </head>
 <body>
@@ -58,6 +60,9 @@
   <button id="btn-pause" class="btn" title="暂停">
     <svg id="pause-icon" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
     <svg id="play-icon" viewBox="0 0 24 24" style="display:none"><polygon points="6 5 20 12 6 19 6 5"/></svg>
+  </button>
+  <button id="btn-lock" class="btn" title="锁定当前软件（不捕捉其他软件）">
+    <svg viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
   </button>
   <button id="btn-copy" class="btn" title="复制">
     <svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>

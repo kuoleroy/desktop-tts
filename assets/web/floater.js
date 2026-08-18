@@ -96,6 +96,20 @@ whenTauriReady(() => {
     btn.title = isPaused ? "暂停" : "继续";
   });
 
+  // 锁定当前软件：锁定后 grabber 只抓取当前前台窗口，切到其他软件不捕捉，朗读不被打断
+  function setLockState(on) {
+    const btn = $("btn-lock");
+    btn.classList.toggle("active", on);
+    btn.title = on ? "已锁定当前软件（点击解锁）" : "锁定当前软件（不捕捉其他软件）";
+  }
+  window.__TAURI__.core.invoke("get_grab_lock").then(setLockState).catch(() => {});
+  $("btn-lock").addEventListener("click", async () => {
+    try {
+      const locked = await window.__TAURI__.core.invoke("toggle_grab_lock");
+      setLockState(locked);
+    } catch (_) {}
+  });
+
   // 打开设置：呼出面板（后台设置），隐藏悬浮框
   $("btn-settings").addEventListener("click", async () => {
     try {
