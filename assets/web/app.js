@@ -783,6 +783,16 @@ whenTauriReady(() => {
     const show = () => {
       clearTimeout(hideTimer);
       sub.classList.remove("sub-hidden");
+      try {
+        const sw = sub.offsetWidth || 160, sh = sub.offsetHeight || 200;
+        const r = item.getBoundingClientRect();
+        let x = r.right + 2;
+        if (x + sw > window.innerWidth) x = r.left - sw - 2;
+        let y = r.top;
+        if (y + sh > window.innerHeight) y = Math.max(0, window.innerHeight - sh - 4);
+        sub.style.left = Math.max(0, x) + "px";
+        sub.style.top = Math.max(0, y) + "px";
+      } catch (_) {}
     };
     item.addEventListener("mouseleave", hide);
     item.addEventListener("mouseenter", show);
