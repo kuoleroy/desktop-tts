@@ -21,9 +21,9 @@
         "decorations": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
-        "resizable": true,
+        "resizable": false,
         "shadow": false,
-        "visible": false,
+        "visible": true,
         "additionalBrowserArgs": "--autoplay-policy=no-user-gesture-required"
       },
       {
