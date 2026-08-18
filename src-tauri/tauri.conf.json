@@ -33,7 +33,7 @@
         "height": 600,
         "minWidth": 300,
         "minHeight": 380,
-        "visible": true,
+        "visible": false,
         "transparent": true,
         "decorations": false,
         "alwaysOnTop": true,

@@ -100,7 +100,7 @@ async function loadVRM(url) {
       currentModel = url.split("/").pop();
       // 加载默认舞蹈（VMD 动作），供静置时播放
       if (!danceName) loadDance(DEFAULT_DANCE);
-      bubble(`你好，我是桌面小精灵，请多多关照！`, 2600);
+      greetingBubble();
       return;
     } catch (e) {
       // 记录到诊断心跳（dev server 的 [diag] 会带出 errs），并重试
@@ -179,6 +179,20 @@ function setStatus(s) {
   $("status").style.display = "block";
   clearTimeout(setStatus._t);
   setStatus._t = setTimeout(() => ($("status").style.display = "none"), 3000);
+}
+
+// 首次加载弹出的问候语：优先用用户自定义（设置面板可改），默认兜底
+function greetingBubble() {
+  (async () => {
+    let g = "你好，我是桌面小精灵，请多多关照！";
+    try {
+      if (window.__TAURI__?.core?.invoke) {
+        const s = await window.__TAURI__.core.invoke("get_app_settings");
+        if (s && s.greeting && String(s.greeting).trim()) g = String(s.greeting).trim();
+      }
+    } catch (_) {}
+    bubble(g, 2600);
+  })();
 }
 
 function call(method, ...args) {

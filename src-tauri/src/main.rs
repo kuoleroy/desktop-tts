@@ -494,8 +494,7 @@ fn handle_grab(app: &tauri::AppHandle, text: &str, x: Option<i32>, y: Option<i32
         }
         let _ = f.show();
     }
-    // 隐藏面板：悬浮框作为前台快捷操作，面板退作后台设置
-    let _ = app.get_webview_window("panel").and_then(|w| w.hide().ok());
+    // 悬浮框与面板可共存：不自动隐藏面板
     // 通知悬浮框填充文本
     let _ = app.emit("floater-text", text);
     // 同步填充面板文本区（面板隐藏时 WebView 仍在运行，下次显示即可见）
@@ -831,6 +830,9 @@ struct AppSettings {
     /// 用户自定义的忽略符号对列表，每项形如 "[]"、"【】"
     #[serde(default = "default_ignore_symbols")]
     ignore_symbols: Vec<String>,
+    /// 精灵首次加载时弹出的问候语
+    #[serde(default = "default_greeting")]
+    greeting: String,
 }
 
 fn default_floater_color() -> String { "#1e2026".into() }
@@ -839,6 +841,7 @@ fn default_ignore_pairs() -> bool { true }
 fn default_ignore_symbols() -> Vec<String> {
     vec!["[]".into(), "{}".into(), "【】".into(), "（）".into(), "()".into(), "《》".into(), "<>".into()]
 }
+fn default_greeting() -> String { "你好，我是桌面小精灵，欢迎回来！".into() }
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -850,6 +853,7 @@ impl Default for AppSettings {
             floater_opacity: default_floater_opacity(),
             ignore_pairs: default_ignore_pairs(),
             ignore_symbols: default_ignore_symbols(),
+            greeting: default_greeting(),
         }
     }
 }
@@ -1518,32 +1522,20 @@ apply_hotkeys(app.handle(), &settings.hotkey_panel, &settings.hotkey_ct);
                 });
             }
 
-            // ---- 面板就绪：WebView2 已初始化 → 默认启动即弹出面板（定位到主窗口右侧）----
+            // ---- 面板就绪：WebView2 已初始化 → 默认启动隐藏面板（用户按 Ctrl+Shift+T 或右键菜单唤出）----
             static LISTENER_PANEL_READY: &str = "panel-ready";
             if !REGISTERED_EVENTS.lock().unwrap().contains(LISTENER_PANEL_READY) {
                 REGISTERED_EVENTS.lock().unwrap().insert(LISTENER_PANEL_READY);
                 let panel_ready_app_handle = Arc::clone(&app_handle);
                 app.listen_any(LISTENER_PANEL_READY, move |_| {
-                    log("panel-ready received");
+                    log("panel-ready received (default hidden)");
                     let app_state = panel_ready_app_handle.state::<AppState>();
                     let mut st = app_state.0.lock().unwrap();
                     if !st.1 {
-                        // 默认启动即弹出：面板靠主窗口右侧显示，切到交互态
-                        if let (Some(main), Some(panel)) = (
-                            panel_ready_app_handle.get_webview_window("main"),
-                            panel_ready_app_handle.get_webview_window("panel"),
-                        ) {
-                            if let Ok(pos) = main.outer_position() {
-                                let win_size = panel.inner_size().ok().unwrap_or(tauri::PhysicalSize::new(420, 600));
-                                let (cx, cy) = clamp_to_work_area(&panel_ready_app_handle, pos.x + 260, pos.y + 20, win_size.width, win_size.height);
-                                let _ = panel.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(cx, cy)));
-                            }
-                        }
-                        let _ = panel_ready_app_handle.get_webview_window("panel").and_then(|p| p.show().ok());
-                        st.0 = AppMode::Interact;
-                        st.1 = true;
-                        let _ = panel_ready_app_handle.emit("toggle-mode", "interact");
-                        log("panel-ready: default show panel (interact)");
+                        st.0 = AppMode::Watch;
+                        st.1 = false;
+                        let _ = panel_ready_app_handle.emit("toggle-mode", "watch");
+                        log("panel-ready: keep panel hidden (watch)");
                     }
                 });
             }

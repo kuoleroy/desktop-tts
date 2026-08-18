@@ -615,6 +615,33 @@ function persistFloaterStyle() {
   if (flo) flo.addEventListener("input", persistFloaterStyle);
 })();
 
+// ---- 精灵问候语 ----
+function setGreetingUI(s) {
+  const inp = $("p-greeting");
+  if (!inp) return;
+  inp.value = (s.greeting && s.greeting.trim()) ? s.greeting : "";
+  inp.placeholder = "精灵首次弹出的问候语";
+}
+
+let greetingTimer = null;
+function persistGreeting() {
+  const inp = $("p-greeting");
+  if (!inp || !window.__TAURI__?.core) return;
+  clearTimeout(greetingTimer);
+  greetingTimer = setTimeout(async () => {
+    try {
+      const s = await window.__TAURI__.core.invoke("get_app_settings");
+      s.greeting = (inp.value || "").trim() || "你好，我是桌面小精灵，欢迎回来！";
+      await window.__TAURI__.core.invoke("set_app_settings", { settings: s });
+      showHint("问候语已保存");
+    } catch (_) {}
+  }, 400);
+}
+(function bindGreetingUI() {
+  const inp = $("p-greeting");
+  if (inp) inp.addEventListener("input", persistGreeting);
+})();
+
 // 启动时读取设置：同步穿透开关与快捷键标签
 (async function initSettings() {
   if (!window.__TAURI__?.core) return;
@@ -626,6 +653,7 @@ function persistFloaterStyle() {
     if (c) { c.dataset.orig = s.hotkey_ct || ""; c.textContent = "穿透:" + hkFriendly(s.hotkey_ct); }
     setFloaterStyleUI(s);
     setIgnoreUI(s);
+    setGreetingUI(s);
   } catch (err) {
     showHint("读取设置失败：" + err.message, true);
   }
